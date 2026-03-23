@@ -34,6 +34,7 @@
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Page size for alignment. */
@@ -429,29 +430,53 @@ int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
     if (!ring)
         return -EINVAL;
 
-    struct pollfd pfd = {
-        .fd     = ring->event_fd,
-        .events = POLLIN,
-    };
+    rss_ring_header_t *hdr = ring->header;
 
-    int ret;
-    do {
-        ret = poll(&pfd, 1, (int)timeout_ms);
-    } while (ret < 0 && errno == EINTR);
+    /* For producer: poll its own eventfd (which it writes to). */
+    if (ring->is_producer) {
+        struct pollfd pfd = {
+            .fd     = ring->event_fd,
+            .events = POLLIN,
+        };
+        int ret;
+        do {
+            ret = poll(&pfd, 1, (int)timeout_ms);
+        } while (ret < 0 && errno == EINTR);
+        if (ret < 0) return -errno;
+        if (ret == 0) return -ETIMEDOUT;
+        uint64_t val;
+        ssize_t r;
+        do { r = read(ring->event_fd, &val, sizeof(val)); }
+        while (r < 0 && errno == EINTR);
+        return 0;
+    }
 
-    if (ret < 0)
-        return -errno;
-    if (ret == 0)
-        return -ETIMEDOUT;
+    /* For consumer: poll write_seq directly.
+     * The consumer's eventfd is not connected to the producer's eventfd
+     * (they are in separate processes). Instead, we poll the shared
+     * write_seq field with short sleeps. */
+    uint64_t last_seq = atomic_load_explicit(&hdr->write_seq,
+                                              memory_order_acquire);
+    uint32_t elapsed = 0;
+    uint32_t interval = 1;  /* start at 1ms, ramp up */
 
-    /* Drain one semaphore count. */
-    uint64_t val;
-    ssize_t r;
-    do {
-        r = read(ring->event_fd, &val, sizeof(val));
-    } while (r < 0 && errno == EINTR);
+    while (elapsed < timeout_ms) {
+        struct timespec ts = {
+            .tv_sec  = 0,
+            .tv_nsec = interval * 1000000L
+        };
+        nanosleep(&ts, NULL);
+        elapsed += interval;
+        if (interval < 10)
+            interval++;
 
-    return 0;
+        uint64_t seq = atomic_load_explicit(&hdr->write_seq,
+                                             memory_order_acquire);
+        if (seq != last_seq)
+            return 0;
+    }
+
+    return -ETIMEDOUT;
 }
 
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring)
