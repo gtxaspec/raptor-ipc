@@ -26,16 +26,30 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
+#include <limits.h>
+#include <linux/futex.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
+
+static int futex_wait(uint32_t *addr, uint32_t expected,
+                      const struct timespec *timeout)
+{
+    return (int)syscall(SYS_futex, addr, FUTEX_WAIT, expected,
+                        timeout, NULL, 0);
+}
+
+static int futex_wake(uint32_t *addr, int count)
+{
+    return (int)syscall(SYS_futex, addr, FUTEX_WAKE, count,
+                        NULL, NULL, 0);
+}
 
 /* Page size for alignment. */
 #ifndef PAGE_SIZE
@@ -50,7 +64,6 @@ struct rss_ring {
     uint8_t           *data;
     size_t             total_size;
     int                shm_fd;
-    int                event_fd;
     bool               is_producer;
     char               name[64];
 };
@@ -103,7 +116,6 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
     snprintf(ring->name, sizeof(ring->name), "%s", name);
     ring->is_producer = true;
     ring->shm_fd      = -1;
-    ring->event_fd    = -1;
 
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
@@ -139,13 +151,8 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
     for (uint32_t i = 0; i < slot_count; i++)
         atomic_store_explicit(&ring->slots[i].seq, 0, memory_order_relaxed);
 
-    /* Create eventfd for consumer notification.
-     * EFD_NONBLOCK: producers never block on write.
-     * EFD_SEMAPHORE: each consumer read decrements by 1, so multiple
-     *                consumers can poll independently. */
-    ring->event_fd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
-    if (ring->event_fd < 0)
-        goto fail;
+    /* Producer uses futex on write_seq for consumer notification. */
+
 
     return ring;
 
@@ -165,9 +172,6 @@ void rss_ring_destroy(rss_ring_t *ring)
 
     if (ring->header && ring->header != MAP_FAILED)
         munmap(ring->header, ring->total_size);
-
-    if (ring->event_fd >= 0)
-        close(ring->event_fd);
 
     if (ring->shm_fd >= 0) {
         char shm_name[128];
@@ -236,13 +240,9 @@ int rss_ring_publish(rss_ring_t *ring,
      * consumers that load write_seq with acquire. */
     atomic_store_explicit(&hdr->write_seq, seq, memory_order_release);
 
-    /* Notify consumers via eventfd. */
-    uint64_t val = 1;
-    ssize_t r;
-    do {
-        r = write(ring->event_fd, &val, sizeof(val));
-    } while (r < 0 && errno == EINTR);
-    /* EAGAIN is fine -- counter already non-zero, consumers will wake. */
+    /* Wake all consumers waiting on write_seq via futex.
+     * Futex operates on the low 32 bits (MIPSEL little-endian). */
+    futex_wake((uint32_t *)&hdr->write_seq, INT_MAX);
 
     return 0;
 }
@@ -266,11 +266,6 @@ void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id,
     ring->header->level     = level;
 }
 
-int rss_ring_get_eventfd(rss_ring_t *ring)
-{
-    return ring ? ring->event_fd : -1;
-}
-
 /* ------------------------------------------------------------------ */
 /*  Consumer API                                                      */
 /* ------------------------------------------------------------------ */
@@ -287,7 +282,6 @@ rss_ring_t *rss_ring_open(const char *name)
     snprintf(ring->name, sizeof(ring->name), "%s", name);
     ring->is_producer = false;
     ring->shm_fd      = -1;
-    ring->event_fd    = -1;
 
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
@@ -318,20 +312,8 @@ rss_ring_t *rss_ring_open(const char *name)
 
     ring_set_pointers(ring, base, hdr->slot_count);
 
-    /* Consumer creates its own eventfd -- the producer eventfd is not
-     * shared across the SHM boundary. For notification, consumers should
-     * either:
-     *   1. Receive the eventfd via SCM_RIGHTS (daemon startup), or
-     *   2. Poll the write_seq field directly.
-     *
-     * We create a local eventfd for rss_ring_wait() compatibility.
-     * In practice, the daemon framework will replace this via
-     * rss_ring_get_eventfd() after receiving the fd from the producer. */
-    ring->event_fd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
-    if (ring->event_fd < 0) {
-        munmap(base, ring->total_size);
-        goto fail;
-    }
+    /* Consumer uses futex on write_seq for notification — no eventfd needed. */
+
 
     return ring;
 
@@ -350,8 +332,6 @@ void rss_ring_close(rss_ring_t *ring)
     if (ring->header && ring->header != MAP_FAILED)
         munmap(ring->header, ring->total_size);
 
-    if (ring->event_fd >= 0)
-        close(ring->event_fd);
     if (ring->shm_fd >= 0)
         close(ring->shm_fd);
 
@@ -436,51 +416,22 @@ int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
 
     rss_ring_header_t *hdr = ring->header;
 
-    /* For producer: poll its own eventfd (which it writes to). */
-    if (ring->is_producer) {
-        struct pollfd pfd = {
-            .fd     = ring->event_fd,
-            .events = POLLIN,
-        };
-        int ret;
-        do {
-            ret = poll(&pfd, 1, (int)timeout_ms);
-        } while (ret < 0 && errno == EINTR);
-        if (ret < 0) return -errno;
-        if (ret == 0) return -ETIMEDOUT;
-        uint64_t val;
-        ssize_t r;
-        do { r = read(ring->event_fd, &val, sizeof(val)); }
-        while (r < 0 && errno == EINTR);
-        return 0;
-    }
+    /* Futex-wait on write_seq in shared memory.
+     * Futex operates on the low 32 bits of write_seq (little-endian).
+     * The producer calls futex_wake after each publish. */
+    uint32_t *futex_addr = (uint32_t *)&hdr->write_seq;
+    uint32_t expected = *futex_addr;
 
-    /* For consumer: poll write_seq directly.
-     * The consumer's eventfd is not connected to the producer's eventfd
-     * (they are in separate processes). Instead, we poll the shared
-     * write_seq field with short sleeps. */
-    uint64_t last_seq = atomic_load_explicit(&hdr->write_seq,
-                                              memory_order_acquire);
-    uint32_t elapsed = 0;
-    uint32_t interval = 1;  /* start at 1ms, ramp up */
+    struct timespec ts = {
+        .tv_sec  = timeout_ms / 1000,
+        .tv_nsec = (timeout_ms % 1000) * 1000000L
+    };
 
-    while (elapsed < timeout_ms) {
-        struct timespec ts = {
-            .tv_sec  = 0,
-            .tv_nsec = interval * 1000000L
-        };
-        nanosleep(&ts, NULL);
-        elapsed += interval;
-        if (interval < 10)
-            interval++;
-
-        uint64_t seq = atomic_load_explicit(&hdr->write_seq,
-                                             memory_order_acquire);
-        if (seq != last_seq)
-            return 0;
-    }
-
-    return -ETIMEDOUT;
+    int ret = futex_wait(futex_addr, expected, &ts);
+    if (ret < 0 && errno == ETIMEDOUT)
+        return -ETIMEDOUT;
+    /* EAGAIN means value already changed — new data available. */
+    return 0;
 }
 
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring)

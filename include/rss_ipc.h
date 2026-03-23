@@ -72,8 +72,6 @@ void         rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id,
                                       uint32_t height, uint32_t fps_num,
                                       uint32_t fps_den,
                                       uint8_t profile, uint8_t level);
-int          rss_ring_get_eventfd(rss_ring_t *ring);
-
 /* Consumer API */
 rss_ring_t *rss_ring_open(const char *name);
 void         rss_ring_close(rss_ring_t *ring);
