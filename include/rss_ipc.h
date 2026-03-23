@@ -39,6 +39,9 @@ typedef struct {
     uint32_t          codec;          /* rss_codec_t value                    */
     uint32_t          width, height;
     uint32_t          fps_num, fps_den;
+    uint8_t           profile;       /* H.264 profile_idc (66=Base,77=Main,100=High) */
+    uint8_t           level;         /* H.264 level_idc (30,31,40,51...)     */
+    uint16_t          _reserved;
     uint32_t          magic;
     uint32_t          version;
     char              pad[0] __attribute__((aligned(64)));
@@ -67,7 +70,8 @@ int          rss_ring_publish(rss_ring_t *ring,
 void         rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id,
                                       uint32_t codec, uint32_t width,
                                       uint32_t height, uint32_t fps_num,
-                                      uint32_t fps_den);
+                                      uint32_t fps_den,
+                                      uint8_t profile, uint8_t level);
 int          rss_ring_get_eventfd(rss_ring_t *ring);
 
 /* Consumer API */
