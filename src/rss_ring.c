@@ -421,6 +421,16 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq,
     if (meta)
         *meta = *slot;
 
+    /* Re-validate: check that the producer hasn't overwritten this slot
+     * while we were reading its metadata. If the seq changed, the data
+     * region is potentially corrupt. */
+    uint64_t recheck = atomic_load_explicit(
+        (_Atomic uint64_t *)&slot->seq, memory_order_acquire);
+    if (recheck != slot_seq) {
+        *read_seq = wseq;
+        return RSS_EOVERFLOW;
+    }
+
     (*read_seq)++;
     return 0;
 }
