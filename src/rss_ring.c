@@ -183,12 +183,20 @@ void rss_ring_destroy(rss_ring_t *ring)
     free(ring);
 }
 
-int rss_ring_publish(rss_ring_t *ring,
-                      const uint8_t *data, uint32_t length,
-                      int64_t timestamp, uint16_t nal_type,
-                      uint8_t is_key)
+int rss_ring_publish_iov(rss_ring_t *ring,
+                          const rss_iov_t *iov, uint32_t iov_count,
+                          int64_t timestamp, uint16_t nal_type,
+                          uint8_t is_key)
 {
-    if (!ring || !ring->is_producer || !data || length == 0)
+    if (!ring || !ring->is_producer || !iov || iov_count == 0)
+        return -EINVAL;
+
+    /* Compute total length */
+    uint32_t length = 0;
+    for (uint32_t i = 0; i < iov_count; i++)
+        length += iov[i].length;
+
+    if (length == 0)
         return -EINVAL;
 
     rss_ring_header_t *hdr = ring->header;
@@ -210,14 +218,17 @@ int rss_ring_publish(rss_ring_t *ring,
         atomic_store_explicit(&hdr->data_head, head + length,
                                memory_order_relaxed);
     } else {
-        /* Not enough room at tail -- wrap to beginning. */
         offset = 0;
         atomic_store_explicit(&hdr->data_head, length,
                                memory_order_relaxed);
     }
 
-    /* Copy frame payload into the data region. */
-    memcpy(ring->data + offset, data, length);
+    /* Copy iov segments contiguously into the data region. */
+    uint32_t off = offset;
+    for (uint32_t i = 0; i < iov_count; i++) {
+        memcpy(ring->data + off, iov[i].data, iov[i].length);
+        off += iov[i].length;
+    }
 
     /* Determine the slot and sequence number. */
     uint64_t seq = atomic_load_explicit(&hdr->write_seq,
@@ -235,16 +246,22 @@ int rss_ring_publish(rss_ring_t *ring,
     /* Write the slot sequence (used by consumers to validate reads). */
     atomic_store_explicit(&slot->seq, seq, memory_order_relaxed);
 
-    /* Publish: release fence then store write_seq.
-     * All preceding writes (data copy, slot fill) are visible to
-     * consumers that load write_seq with acquire. */
+    /* Publish: release fence then store write_seq. */
     atomic_store_explicit(&hdr->write_seq, seq, memory_order_release);
 
-    /* Wake all consumers waiting on write_seq via futex.
-     * Futex operates on the low 32 bits (MIPSEL little-endian). */
+    /* Wake all consumers waiting on write_seq via futex. */
     futex_wake((uint32_t *)&hdr->write_seq, INT_MAX);
 
     return 0;
+}
+
+int rss_ring_publish(rss_ring_t *ring,
+                      const uint8_t *data, uint32_t length,
+                      int64_t timestamp, uint16_t nal_type,
+                      uint8_t is_key)
+{
+    rss_iov_t iov = { .data = data, .length = length };
+    return rss_ring_publish_iov(ring, &iov, 1, timestamp, nal_type, is_key);
 }
 
 void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id,

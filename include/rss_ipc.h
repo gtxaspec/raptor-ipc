@@ -59,6 +59,12 @@ typedef struct {
 
 typedef struct rss_ring rss_ring_t;   /* opaque */
 
+/* Scatter-gather I/O vector for rss_ring_publish_iov */
+typedef struct {
+    const uint8_t *data;
+    uint32_t       length;
+} rss_iov_t;
+
 /* Producer API */
 rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
                              uint32_t data_size);
@@ -67,6 +73,10 @@ int          rss_ring_publish(rss_ring_t *ring,
                               const uint8_t *data, uint32_t length,
                               int64_t timestamp, uint16_t nal_type,
                               uint8_t is_key);
+int          rss_ring_publish_iov(rss_ring_t *ring,
+                                   const rss_iov_t *iov, uint32_t iov_count,
+                                   int64_t timestamp, uint16_t nal_type,
+                                   uint8_t is_key);
 void         rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id,
                                       uint32_t codec, uint32_t width,
                                       uint32_t height, uint32_t fps_num,
