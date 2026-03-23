@@ -376,19 +376,10 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq,
     }
 
     /* Check for overflow: consumer fell behind by >= slot_count frames.
-     * The oldest valid sequence is (wseq - slot_count + 1). */
+     * Skip to the latest frame to recover. */
     if (wseq - *read_seq >= slot_count) {
-        *read_seq = wseq - slot_count + 1;
-        /* Return overflow but still provide the oldest valid frame. */
-        uint32_t idx = (uint32_t)(*read_seq % slot_count);
-        const rss_ring_slot_t *slot = &ring->slots[idx];
-
-        *data   = ring->data + slot->data_offset;
-        *length = slot->data_length;
-        if (meta)
-            *meta = *slot;
-
-        (*read_seq)++;
+        /* Jump to latest frame so consumer catches up immediately */
+        *read_seq = wseq;
         return RSS_EOVERFLOW;
     }
 
