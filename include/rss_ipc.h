@@ -23,115 +23,104 @@ extern "C" {
 /*  SHM Ring Buffer (section 2.1)                                     */
 /* ------------------------------------------------------------------ */
 
-#define RSS_RING_MAGIC       0x52535352   /* "RSSR" */
-#define RSS_RING_VERSION     1
-#define RSS_RING_MAX_SLOTS   64
-#define RSS_RING_SHM_PREFIX  "/rss_ring_"
+#define RSS_RING_MAGIC 0x52535352 /* "RSSR" */
+#define RSS_RING_VERSION 1
+#define RSS_RING_MAX_SLOTS 64
+#define RSS_RING_SHM_PREFIX "/rss_ring_"
 
-#define RSS_EOVERFLOW        (-75)  /* consumer fell behind */
+#define RSS_EOVERFLOW (-75) /* consumer fell behind */
 
 typedef struct {
-    _Atomic uint64_t  write_seq;      /* monotonic frame sequence             */
-    uint32_t          slot_count;     /* number of slots (power of 2)         */
-    uint32_t          data_size;      /* total data region size in bytes      */
-    _Atomic uint32_t  data_head;      /* next write offset in data region     */
-    uint32_t          stream_id;      /* 0=main, 1=sub, 2=jpeg, 0x10=audio   */
-    uint32_t          codec;          /* rss_codec_t value                    */
-    uint32_t          width, height;
-    uint32_t          fps_num, fps_den;
-    uint8_t           profile;       /* H.264 profile_idc (66=Base,77=Main,100=High) */
-    uint8_t           level;         /* H.264 level_idc (30,31,40,51...)     */
-    uint16_t          _reserved;
-    uint32_t          magic;
-    uint32_t          version;
-    char              pad[0] __attribute__((aligned(64)));
+    _Atomic uint64_t write_seq; /* monotonic frame sequence             */
+    uint32_t slot_count;        /* number of slots (power of 2)         */
+    uint32_t data_size;         /* total data region size in bytes      */
+    _Atomic uint32_t data_head; /* next write offset in data region     */
+    uint32_t stream_id;         /* 0=main, 1=sub, 2=jpeg, 0x10=audio   */
+    uint32_t codec;             /* rss_codec_t value                    */
+    uint32_t width, height;
+    uint32_t fps_num, fps_den;
+    uint8_t profile; /* H.264 profile_idc (66=Base,77=Main,100=High) */
+    uint8_t level;   /* H.264 level_idc (30,31,40,51...)     */
+    uint16_t _reserved;
+    uint32_t magic;
+    uint32_t version;
+    char pad[0] __attribute__((aligned(64)));
 } rss_ring_header_t;
 
 typedef struct {
-    _Atomic uint64_t  seq;            /* sequence number when written         */
-    uint32_t          data_offset;    /* offset into data region              */
-    uint32_t          data_length;    /* frame payload size in bytes          */
-    int64_t           timestamp;      /* capture timestamp (us)               */
-    uint16_t          nal_type;       /* NAL type for video, codec for audio  */
-    uint8_t           is_key;         /* 1 if IDR / keyframe                  */
-    uint8_t           _pad;
+    _Atomic uint64_t seq; /* sequence number when written         */
+    uint32_t data_offset; /* offset into data region              */
+    uint32_t data_length; /* frame payload size in bytes          */
+    int64_t timestamp;    /* capture timestamp (us)               */
+    uint16_t nal_type;    /* NAL type for video, codec for audio  */
+    uint8_t is_key;       /* 1 if IDR / keyframe                  */
+    uint8_t _pad;
 } rss_ring_slot_t;
 
-typedef struct rss_ring rss_ring_t;   /* opaque */
+typedef struct rss_ring rss_ring_t; /* opaque */
 
 /* Scatter-gather I/O vector for rss_ring_publish_iov */
 typedef struct {
     const uint8_t *data;
-    uint32_t       length;
+    uint32_t length;
 } rss_iov_t;
 
 /* Producer API */
-rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
-                             uint32_t data_size);
-void         rss_ring_destroy(rss_ring_t *ring);
-int          rss_ring_publish(rss_ring_t *ring,
-                              const uint8_t *data, uint32_t length,
-                              int64_t timestamp, uint16_t nal_type,
-                              uint8_t is_key);
-int          rss_ring_publish_iov(rss_ring_t *ring,
-                                   const rss_iov_t *iov, uint32_t iov_count,
-                                   int64_t timestamp, uint16_t nal_type,
-                                   uint8_t is_key);
-void         rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id,
-                                      uint32_t codec, uint32_t width,
-                                      uint32_t height, uint32_t fps_num,
-                                      uint32_t fps_den,
-                                      uint8_t profile, uint8_t level);
+rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data_size);
+void rss_ring_destroy(rss_ring_t *ring);
+int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int64_t timestamp,
+                     uint16_t nal_type, uint8_t is_key);
+int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_count,
+                         int64_t timestamp, uint16_t nal_type, uint8_t is_key);
+void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t codec, uint32_t width,
+                              uint32_t height, uint32_t fps_num, uint32_t fps_den, uint8_t profile,
+                              uint8_t level);
 /* Consumer API */
 rss_ring_t *rss_ring_open(const char *name);
-void         rss_ring_close(rss_ring_t *ring);
-int          rss_ring_read(rss_ring_t *ring, uint64_t *read_seq,
-                           const uint8_t **data, uint32_t *length,
-                           rss_ring_slot_t *meta);
-int          rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms);
+void rss_ring_close(rss_ring_t *ring);
+int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data, uint32_t *length,
+                  rss_ring_slot_t *meta);
+int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms);
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring);
 
 /* ------------------------------------------------------------------ */
 /*  OSD SHM Double-Buffer (section 2.2)                               */
 /* ------------------------------------------------------------------ */
 
-typedef struct rss_osd_shm rss_osd_shm_t;  /* opaque */
+typedef struct rss_osd_shm rss_osd_shm_t; /* opaque */
 
 /* Producer API (ROD) */
-rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width,
-                                uint32_t height);
-void            rss_osd_destroy(rss_osd_shm_t *shm);
-uint8_t        *rss_osd_get_draw_buffer(rss_osd_shm_t *shm);
-void            rss_osd_publish(rss_osd_shm_t *shm);
+rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height);
+void rss_osd_destroy(rss_osd_shm_t *shm);
+uint8_t *rss_osd_get_draw_buffer(rss_osd_shm_t *shm);
+void rss_osd_publish(rss_osd_shm_t *shm);
 
 /* Consumer API (RVD) */
 rss_osd_shm_t *rss_osd_open(const char *name);
-void            rss_osd_close(rss_osd_shm_t *shm);
-const uint8_t  *rss_osd_get_active_buffer(rss_osd_shm_t *shm,
-                                           uint32_t *width, uint32_t *height);
-int             rss_osd_check_dirty(rss_osd_shm_t *shm);
-void            rss_osd_clear_dirty(rss_osd_shm_t *shm);
-int             rss_osd_get_eventfd(rss_osd_shm_t *shm);
+void rss_osd_close(rss_osd_shm_t *shm);
+const uint8_t *rss_osd_get_active_buffer(rss_osd_shm_t *shm, uint32_t *width, uint32_t *height);
+int rss_osd_check_dirty(rss_osd_shm_t *shm);
+void rss_osd_clear_dirty(rss_osd_shm_t *shm);
+int rss_osd_get_eventfd(rss_osd_shm_t *shm);
 
 /* ------------------------------------------------------------------ */
 /*  Control Socket (section 2.3)                                      */
 /* ------------------------------------------------------------------ */
 
-typedef struct rss_ctrl rss_ctrl_t;   /* opaque */
+typedef struct rss_ctrl rss_ctrl_t; /* opaque */
 
 /* Server API (daemon side) */
 rss_ctrl_t *rss_ctrl_listen(const char *sock_path);
-void         rss_ctrl_destroy(rss_ctrl_t *ctrl);
-int          rss_ctrl_get_fd(rss_ctrl_t *ctrl);
-int          rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
-                 int (*handler)(const char *cmd_json, char *resp_buf,
-                                int resp_buf_size, void *userdata),
-                 void *userdata);
+void rss_ctrl_destroy(rss_ctrl_t *ctrl);
+int rss_ctrl_get_fd(rss_ctrl_t *ctrl);
+int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
+                               int (*handler)(const char *cmd_json, char *resp_buf,
+                                              int resp_buf_size, void *userdata),
+                               void *userdata);
 
 /* Client API (raptorctl side) */
-int rss_ctrl_send_command(const char *sock_path, const char *cmd_json,
-                           char *resp_buf, int resp_buf_size,
-                           uint32_t timeout_ms);
+int rss_ctrl_send_command(const char *sock_path, const char *cmd_json, char *resp_buf,
+                          int resp_buf_size, uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

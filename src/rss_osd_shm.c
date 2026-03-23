@@ -34,30 +34,30 @@
 #define PAGE_SIZE 4096
 #endif
 
-#define RSS_OSD_MAGIC    0x52534F44   /* "RSOD" */
-#define RSS_OSD_VERSION  1
+#define RSS_OSD_MAGIC 0x52534F44 /* "RSOD" */
+#define RSS_OSD_VERSION 1
 
 #define RSS_OSD_SHM_PREFIX "/rss_osd_"
 
 typedef struct {
-    uint32_t        width;
-    uint32_t        height;
-    uint32_t        stride;       /* bytes per row (width * 4 for BGRA) */
-    uint32_t        buf_size;     /* single buffer size = stride * height */
-    _Atomic int     active_buf;   /* 0 or 1: which buffer consumer reads */
-    _Atomic int     dirty;        /* 1 = active_buf has new data */
-    uint32_t        magic;
-    uint32_t        version;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;        /* bytes per row (width * 4 for BGRA) */
+    uint32_t buf_size;      /* single buffer size = stride * height */
+    _Atomic int active_buf; /* 0 or 1: which buffer consumer reads */
+    _Atomic int dirty;      /* 1 = active_buf has new data */
+    uint32_t magic;
+    uint32_t version;
 } rss_osd_header_t;
 
 struct rss_osd_shm {
     rss_osd_header_t *header;
-    uint8_t          *buf[2];
-    size_t            total_size;
-    int               shm_fd;
-    int               event_fd;
-    bool              is_producer;
-    char              name[64];
+    uint8_t *buf[2];
+    size_t total_size;
+    int shm_fd;
+    int event_fd;
+    bool is_producer;
+    char name[64];
 };
 
 static size_t osd_total_size(uint32_t buf_size)
@@ -65,8 +65,7 @@ static size_t osd_total_size(uint32_t buf_size)
     return PAGE_SIZE + (size_t)buf_size * 2;
 }
 
-static void osd_set_pointers(rss_osd_shm_t *shm, void *base,
-                              uint32_t buf_size)
+static void osd_set_pointers(rss_osd_shm_t *shm, void *base, uint32_t buf_size)
 {
     shm->header = (rss_osd_header_t *)base;
     shm->buf[0] = (uint8_t *)base + PAGE_SIZE;
@@ -82,8 +81,7 @@ static void make_shm_name(char *buf, size_t bufsz, const char *name)
 /*  Producer API (ROD)                                                */
 /* ------------------------------------------------------------------ */
 
-rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width,
-                                uint32_t height)
+rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height)
 {
     if (!name || width == 0 || height == 0)
         return NULL;
@@ -94,10 +92,10 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width,
 
     snprintf(shm->name, sizeof(shm->name), "%s", name);
     shm->is_producer = true;
-    shm->shm_fd      = -1;
-    shm->event_fd    = -1;
+    shm->shm_fd = -1;
+    shm->event_fd = -1;
 
-    uint32_t stride   = width * 4;  /* BGRA */
+    uint32_t stride = width * 4; /* BGRA */
     uint32_t buf_size = stride * height;
 
     shm->total_size = osd_total_size(buf_size);
@@ -112,9 +110,7 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width,
     if (ftruncate(shm->shm_fd, (off_t)shm->total_size) < 0)
         goto fail;
 
-    void *base = mmap(NULL, shm->total_size,
-                       PROT_READ | PROT_WRITE,
-                       MAP_SHARED, shm->shm_fd, 0);
+    void *base = mmap(NULL, shm->total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm->shm_fd, 0);
     if (base == MAP_FAILED)
         goto fail;
 
@@ -122,15 +118,13 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width,
 
     /* Initialise header. */
     memset(shm->header, 0, PAGE_SIZE);
-    shm->header->width    = width;
-    shm->header->height   = height;
-    shm->header->stride   = stride;
+    shm->header->width = width;
+    shm->header->height = height;
+    shm->header->stride = stride;
     shm->header->buf_size = buf_size;
-    atomic_store_explicit(&shm->header->active_buf, 0,
-                           memory_order_relaxed);
-    atomic_store_explicit(&shm->header->dirty, 0,
-                           memory_order_relaxed);
-    shm->header->magic   = RSS_OSD_MAGIC;
+    atomic_store_explicit(&shm->header->active_buf, 0, memory_order_relaxed);
+    atomic_store_explicit(&shm->header->dirty, 0, memory_order_relaxed);
+    shm->header->magic = RSS_OSD_MAGIC;
     shm->header->version = RSS_OSD_VERSION;
 
     /* Clear both buffers. */
@@ -180,8 +174,7 @@ uint8_t *rss_osd_get_draw_buffer(rss_osd_shm_t *shm)
         return NULL;
 
     /* Return the inactive buffer: the one the consumer is NOT reading. */
-    int active = atomic_load_explicit(&shm->header->active_buf,
-                                       memory_order_relaxed);
+    int active = atomic_load_explicit(&shm->header->active_buf, memory_order_relaxed);
     return shm->buf[1 - active];
 }
 
@@ -191,16 +184,13 @@ void rss_osd_publish(rss_osd_shm_t *shm)
         return;
 
     /* Swap: the buffer we just drew into becomes the active one. */
-    int active = atomic_load_explicit(&shm->header->active_buf,
-                                       memory_order_relaxed);
+    int active = atomic_load_explicit(&shm->header->active_buf, memory_order_relaxed);
     int new_active = 1 - active;
 
     /* Release ordering: all bitmap writes must be visible to the
      * consumer before it sees the new active_buf. */
-    atomic_store_explicit(&shm->header->active_buf, new_active,
-                           memory_order_release);
-    atomic_store_explicit(&shm->header->dirty, 1,
-                           memory_order_release);
+    atomic_store_explicit(&shm->header->active_buf, new_active, memory_order_release);
+    atomic_store_explicit(&shm->header->dirty, 1, memory_order_release);
 
     /* Signal the consumer via eventfd. */
     uint64_t val = 1;
@@ -225,8 +215,8 @@ rss_osd_shm_t *rss_osd_open(const char *name)
 
     snprintf(shm->name, sizeof(shm->name), "%s", name);
     shm->is_producer = false;
-    shm->shm_fd      = -1;
-    shm->event_fd    = -1;
+    shm->shm_fd = -1;
+    shm->event_fd = -1;
 
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
@@ -241,8 +231,7 @@ rss_osd_shm_t *rss_osd_open(const char *name)
 
     shm->total_size = (size_t)st.st_size;
 
-    void *base = mmap(NULL, shm->total_size,
-                       PROT_READ, MAP_SHARED, shm->shm_fd, 0);
+    void *base = mmap(NULL, shm->total_size, PROT_READ, MAP_SHARED, shm->shm_fd, 0);
     if (base == MAP_FAILED)
         goto fail;
 
@@ -288,16 +277,14 @@ void rss_osd_close(rss_osd_shm_t *shm)
     free(shm);
 }
 
-const uint8_t *rss_osd_get_active_buffer(rss_osd_shm_t *shm,
-                                          uint32_t *width, uint32_t *height)
+const uint8_t *rss_osd_get_active_buffer(rss_osd_shm_t *shm, uint32_t *width, uint32_t *height)
 {
     if (!shm)
         return NULL;
 
     /* Acquire ordering: see the bitmap data that the producer wrote
      * before setting active_buf. */
-    int active = atomic_load_explicit(&shm->header->active_buf,
-                                       memory_order_acquire);
+    int active = atomic_load_explicit(&shm->header->active_buf, memory_order_acquire);
 
     if (width)
         *width = shm->header->width;
@@ -312,8 +299,7 @@ int rss_osd_check_dirty(rss_osd_shm_t *shm)
     if (!shm)
         return 0;
 
-    return atomic_load_explicit(&shm->header->dirty,
-                                 memory_order_acquire);
+    return atomic_load_explicit(&shm->header->dirty, memory_order_acquire);
 }
 
 void rss_osd_clear_dirty(rss_osd_shm_t *shm)
@@ -321,8 +307,7 @@ void rss_osd_clear_dirty(rss_osd_shm_t *shm)
     if (!shm)
         return;
 
-    atomic_store_explicit(&shm->header->dirty, 0,
-                           memory_order_relaxed);
+    atomic_store_explicit(&shm->header->dirty, 0, memory_order_relaxed);
 }
 
 int rss_osd_get_eventfd(rss_osd_shm_t *shm)

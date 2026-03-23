@@ -38,17 +38,14 @@
 #include <time.h>
 #include <unistd.h>
 
-static int futex_wait(uint32_t *addr, uint32_t expected,
-                      const struct timespec *timeout)
+static int futex_wait(uint32_t *addr, uint32_t expected, const struct timespec *timeout)
 {
-    return (int)syscall(SYS_futex, addr, FUTEX_WAIT, expected,
-                        timeout, NULL, 0);
+    return (int)syscall(SYS_futex, addr, FUTEX_WAIT, expected, timeout, NULL, 0);
 }
 
 static int futex_wake(uint32_t *addr, int count)
 {
-    return (int)syscall(SYS_futex, addr, FUTEX_WAKE, count,
-                        NULL, NULL, 0);
+    return (int)syscall(SYS_futex, addr, FUTEX_WAKE, count, NULL, NULL, 0);
 }
 
 /* Page size for alignment. */
@@ -60,12 +57,12 @@ static int futex_wake(uint32_t *addr, int count)
 
 struct rss_ring {
     rss_ring_header_t *header;
-    rss_ring_slot_t   *slots;
-    uint8_t           *data;
-    size_t             total_size;
-    int                shm_fd;
-    bool               is_producer;
-    char               name[64];
+    rss_ring_slot_t *slots;
+    uint8_t *data;
+    size_t total_size;
+    int shm_fd;
+    bool is_producer;
+    char name[64];
 };
 
 /*
@@ -80,13 +77,11 @@ static size_t ring_total_size(uint32_t slot_count, uint32_t data_size)
     return PAGE_SIZE + slots_bytes + data_size;
 }
 
-static void ring_set_pointers(rss_ring_t *ring, void *base,
-                               uint32_t slot_count)
+static void ring_set_pointers(rss_ring_t *ring, void *base, uint32_t slot_count)
 {
     ring->header = (rss_ring_header_t *)base;
-    ring->slots  = (rss_ring_slot_t *)((uint8_t *)base + PAGE_SIZE);
-    ring->data   = (uint8_t *)ring->slots +
-                   (size_t)slot_count * sizeof(rss_ring_slot_t);
+    ring->slots = (rss_ring_slot_t *)((uint8_t *)base + PAGE_SIZE);
+    ring->data = (uint8_t *)ring->slots + (size_t)slot_count * sizeof(rss_ring_slot_t);
 }
 
 static void make_shm_name(char *buf, size_t bufsz, const char *name)
@@ -98,11 +93,9 @@ static void make_shm_name(char *buf, size_t bufsz, const char *name)
 /*  Producer API                                                      */
 /* ------------------------------------------------------------------ */
 
-rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
-                             uint32_t data_size)
+rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data_size)
 {
-    if (!name || slot_count == 0 || slot_count > RSS_RING_MAX_SLOTS ||
-        data_size == 0)
+    if (!name || slot_count == 0 || slot_count > RSS_RING_MAX_SLOTS || data_size == 0)
         return NULL;
 
     /* slot_count must be a power of 2 */
@@ -115,7 +108,7 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
 
     snprintf(ring->name, sizeof(ring->name), "%s", name);
     ring->is_producer = true;
-    ring->shm_fd      = -1;
+    ring->shm_fd = -1;
 
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
@@ -130,9 +123,7 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
     if (ftruncate(ring->shm_fd, (off_t)ring->total_size) < 0)
         goto fail;
 
-    void *base = mmap(NULL, ring->total_size,
-                       PROT_READ | PROT_WRITE,
-                       MAP_SHARED, ring->shm_fd, 0);
+    void *base = mmap(NULL, ring->total_size, PROT_READ | PROT_WRITE, MAP_SHARED, ring->shm_fd, 0);
     if (base == MAP_FAILED)
         goto fail;
 
@@ -142,9 +133,9 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
     memset(ring->header, 0, PAGE_SIZE);
     atomic_store_explicit(&ring->header->write_seq, 0, memory_order_relaxed);
     ring->header->slot_count = slot_count;
-    ring->header->data_size  = data_size;
+    ring->header->data_size = data_size;
     atomic_store_explicit(&ring->header->data_head, 0, memory_order_relaxed);
-    ring->header->magic   = RSS_RING_MAGIC;
+    ring->header->magic = RSS_RING_MAGIC;
     ring->header->version = RSS_RING_VERSION;
 
     /* Initialise all slot sequences to 0 (no valid data). */
@@ -152,7 +143,6 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count,
         atomic_store_explicit(&ring->slots[i].seq, 0, memory_order_relaxed);
 
     /* Producer uses futex on write_seq for consumer notification. */
-
 
     return ring;
 
@@ -183,10 +173,8 @@ void rss_ring_destroy(rss_ring_t *ring)
     free(ring);
 }
 
-int rss_ring_publish_iov(rss_ring_t *ring,
-                          const rss_iov_t *iov, uint32_t iov_count,
-                          int64_t timestamp, uint16_t nal_type,
-                          uint8_t is_key)
+int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_count,
+                         int64_t timestamp, uint16_t nal_type, uint8_t is_key)
 {
     if (!ring || !ring->is_producer || !iov || iov_count == 0)
         return -EINVAL;
@@ -200,7 +188,7 @@ int rss_ring_publish_iov(rss_ring_t *ring,
         return -EINVAL;
 
     rss_ring_header_t *hdr = ring->header;
-    uint32_t data_size  = hdr->data_size;
+    uint32_t data_size = hdr->data_size;
     uint32_t slot_count = hdr->slot_count;
 
     if (length > data_size)
@@ -208,19 +196,16 @@ int rss_ring_publish_iov(rss_ring_t *ring,
 
     /* Allocate space in the circular data region.
      * If the frame doesn't fit before the end, skip to offset 0. */
-    uint32_t head = atomic_load_explicit(&hdr->data_head,
-                                          memory_order_relaxed);
+    uint32_t head = atomic_load_explicit(&hdr->data_head, memory_order_relaxed);
     uint32_t remaining = data_size - head;
     uint32_t offset;
 
     if (length <= remaining) {
         offset = head;
-        atomic_store_explicit(&hdr->data_head, head + length,
-                               memory_order_relaxed);
+        atomic_store_explicit(&hdr->data_head, head + length, memory_order_relaxed);
     } else {
         offset = 0;
-        atomic_store_explicit(&hdr->data_head, length,
-                               memory_order_relaxed);
+        atomic_store_explicit(&hdr->data_head, length, memory_order_relaxed);
     }
 
     /* Copy iov segments contiguously into the data region. */
@@ -231,17 +216,16 @@ int rss_ring_publish_iov(rss_ring_t *ring,
     }
 
     /* Determine the slot and sequence number. */
-    uint64_t seq = atomic_load_explicit(&hdr->write_seq,
-                                         memory_order_relaxed) + 1;
+    uint64_t seq = atomic_load_explicit(&hdr->write_seq, memory_order_relaxed) + 1;
     uint32_t slot_idx = (uint32_t)(seq % slot_count);
 
     rss_ring_slot_t *slot = &ring->slots[slot_idx];
     slot->data_offset = offset;
     slot->data_length = length;
-    slot->timestamp   = timestamp;
-    slot->nal_type    = nal_type;
-    slot->is_key      = is_key;
-    slot->_pad        = 0;
+    slot->timestamp = timestamp;
+    slot->nal_type = nal_type;
+    slot->is_key = is_key;
+    slot->_pad = 0;
 
     /* Write the slot sequence (used by consumers to validate reads). */
     atomic_store_explicit(&slot->seq, seq, memory_order_relaxed);
@@ -255,32 +239,28 @@ int rss_ring_publish_iov(rss_ring_t *ring,
     return 0;
 }
 
-int rss_ring_publish(rss_ring_t *ring,
-                      const uint8_t *data, uint32_t length,
-                      int64_t timestamp, uint16_t nal_type,
-                      uint8_t is_key)
+int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int64_t timestamp,
+                     uint16_t nal_type, uint8_t is_key)
 {
-    rss_iov_t iov = { .data = data, .length = length };
+    rss_iov_t iov = {.data = data, .length = length};
     return rss_ring_publish_iov(ring, &iov, 1, timestamp, nal_type, is_key);
 }
 
-void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id,
-                               uint32_t codec, uint32_t width,
-                               uint32_t height, uint32_t fps_num,
-                               uint32_t fps_den,
-                               uint8_t profile, uint8_t level)
+void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t codec, uint32_t width,
+                              uint32_t height, uint32_t fps_num, uint32_t fps_den, uint8_t profile,
+                              uint8_t level)
 {
     if (!ring || !ring->is_producer)
         return;
 
     ring->header->stream_id = stream_id;
-    ring->header->codec     = codec;
-    ring->header->width     = width;
-    ring->header->height    = height;
-    ring->header->fps_num   = fps_num;
-    ring->header->fps_den   = fps_den;
-    ring->header->profile   = profile;
-    ring->header->level     = level;
+    ring->header->codec = codec;
+    ring->header->width = width;
+    ring->header->height = height;
+    ring->header->fps_num = fps_num;
+    ring->header->fps_den = fps_den;
+    ring->header->profile = profile;
+    ring->header->level = level;
 }
 
 /* ------------------------------------------------------------------ */
@@ -298,7 +278,7 @@ rss_ring_t *rss_ring_open(const char *name)
 
     snprintf(ring->name, sizeof(ring->name), "%s", name);
     ring->is_producer = false;
-    ring->shm_fd      = -1;
+    ring->shm_fd = -1;
 
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
@@ -315,8 +295,7 @@ rss_ring_t *rss_ring_open(const char *name)
     ring->total_size = (size_t)st.st_size;
 
     /* Map the entire segment read-only. Consumers only read. */
-    void *base = mmap(NULL, ring->total_size,
-                       PROT_READ, MAP_SHARED, ring->shm_fd, 0);
+    void *base = mmap(NULL, ring->total_size, PROT_READ, MAP_SHARED, ring->shm_fd, 0);
     if (base == MAP_FAILED)
         goto fail;
 
@@ -330,7 +309,6 @@ rss_ring_t *rss_ring_open(const char *name)
     ring_set_pointers(ring, base, hdr->slot_count);
 
     /* Consumer uses futex on write_seq for notification — no eventfd needed. */
-
 
     return ring;
 
@@ -355,9 +333,8 @@ void rss_ring_close(rss_ring_t *ring)
     free(ring);
 }
 
-int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq,
-                   const uint8_t **data, uint32_t *length,
-                   rss_ring_slot_t *meta)
+int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data, uint32_t *length,
+                  rss_ring_slot_t *meta)
 {
     if (!ring || !read_seq || !data || !length)
         return -EINVAL;
@@ -367,8 +344,7 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq,
 
     /* Load write_seq with acquire -- pairs with the producer's release
      * store, ensuring all slot and data writes are visible. */
-    uint64_t wseq = atomic_load_explicit(&hdr->write_seq,
-                                          memory_order_acquire);
+    uint64_t wseq = atomic_load_explicit(&hdr->write_seq, memory_order_acquire);
 
     if (*read_seq >= wseq) {
         /* No new frames available. */
@@ -390,15 +366,14 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq,
     /* Validate that the slot's sequence matches what we expect.
      * A mismatch means the producer has wrapped past us in the slot
      * array -- treat as overflow. */
-    uint64_t slot_seq = atomic_load_explicit(
-        (_Atomic uint64_t *)&slot->seq, memory_order_acquire);
+    uint64_t slot_seq = atomic_load_explicit((_Atomic uint64_t *)&slot->seq, memory_order_acquire);
     if (slot_seq != *read_seq) {
         /* Slot was reused. Advance to oldest valid. */
         *read_seq = wseq - slot_count + 1;
         idx = (uint32_t)(*read_seq % slot_count);
         slot = &ring->slots[idx];
 
-        *data   = ring->data + slot->data_offset;
+        *data = ring->data + slot->data_offset;
         *length = slot->data_length;
         if (meta)
             *meta = *slot;
@@ -407,7 +382,7 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq,
         return RSS_EOVERFLOW;
     }
 
-    *data   = ring->data + slot->data_offset;
+    *data = ring->data + slot->data_offset;
     *length = slot->data_length;
     if (meta)
         *meta = *slot;
@@ -415,8 +390,7 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq,
     /* Re-validate: check that the producer hasn't overwritten this slot
      * while we were reading its metadata. If the seq changed, the data
      * region is potentially corrupt. */
-    uint64_t recheck = atomic_load_explicit(
-        (_Atomic uint64_t *)&slot->seq, memory_order_acquire);
+    uint64_t recheck = atomic_load_explicit((_Atomic uint64_t *)&slot->seq, memory_order_acquire);
     if (recheck != slot_seq) {
         *read_seq = wseq;
         return RSS_EOVERFLOW;
@@ -439,10 +413,7 @@ int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
     uint32_t *futex_addr = (uint32_t *)&hdr->write_seq;
     uint32_t expected = *futex_addr;
 
-    struct timespec ts = {
-        .tv_sec  = timeout_ms / 1000,
-        .tv_nsec = (timeout_ms % 1000) * 1000000L
-    };
+    struct timespec ts = {.tv_sec = timeout_ms / 1000, .tv_nsec = (timeout_ms % 1000) * 1000000L};
 
     int ret = futex_wait(futex_addr, expected, &ts);
     if (ret < 0 && errno == ETIMEDOUT)

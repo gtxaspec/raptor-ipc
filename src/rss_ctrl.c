@@ -26,12 +26,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#define RSS_CTRL_MAX_MSG    65535   /* maximum JSON body size */
-#define RSS_CTRL_BACKLOG    5
+#define RSS_CTRL_MAX_MSG 65535 /* maximum JSON body size */
+#define RSS_CTRL_BACKLOG 5
 
 struct rss_ctrl {
-    int   listen_fd;
-    char  sock_path[108];  /* sun_path limit */
+    int listen_fd;
+    char sock_path[108]; /* sun_path limit */
 };
 
 /* ------------------------------------------------------------------ */
@@ -49,7 +49,7 @@ static int read_exact(int fd, void *buf, size_t count, uint32_t timeout_ms)
 
     while (remaining > 0) {
         if (timeout_ms > 0) {
-            struct pollfd pfd = { .fd = fd, .events = POLLIN };
+            struct pollfd pfd = {.fd = fd, .events = POLLIN};
             int pr;
             do {
                 pr = poll(&pfd, 1, (int)timeout_ms);
@@ -220,11 +220,9 @@ int rss_ctrl_get_fd(rss_ctrl_t *ctrl)
 }
 
 int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
-                                int (*handler)(const char *cmd_json,
-                                               char *resp_buf,
-                                               int resp_buf_size,
-                                               void *userdata),
-                                void *userdata)
+                               int (*handler)(const char *cmd_json, char *resp_buf,
+                                              int resp_buf_size, void *userdata),
+                               void *userdata)
 {
     if (!ctrl || !handler)
         return -EINVAL;
@@ -260,7 +258,8 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
         /* Handler returned an error -- send a generic error response. */
         resp_len = snprintf(resp_buf, sizeof(resp_buf),
                             "{\"status\":\"error\",\"code\":%d,"
-                            "\"msg\":\"handler error\"}", resp_len);
+                            "\"msg\":\"handler error\"}",
+                            resp_len);
     }
 
     /* Write the response. */
@@ -276,9 +275,8 @@ done:
 /*  Client API (raptorctl side)                                       */
 /* ------------------------------------------------------------------ */
 
-int rss_ctrl_send_command(const char *sock_path, const char *cmd_json,
-                           char *resp_buf, int resp_buf_size,
-                           uint32_t timeout_ms)
+int rss_ctrl_send_command(const char *sock_path, const char *cmd_json, char *resp_buf,
+                          int resp_buf_size, uint32_t timeout_ms)
 {
     if (!sock_path || !cmd_json || !resp_buf || resp_buf_size <= 0)
         return -EINVAL;
