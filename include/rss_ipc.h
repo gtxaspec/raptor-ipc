@@ -56,6 +56,7 @@ typedef struct __attribute__((aligned(64))) {
     _Atomic uint32_t magic;     /* RSS_RING_MAGIC — written last (release)     */
     uint32_t version;
     _Atomic uint32_t incarnation; /* incremented each create (crash detection)  */
+    _Atomic uint32_t idr_request; /* consumer sets to 1 to request keyframe     */
 } rss_ring_header_t;
 
 _Static_assert(sizeof(rss_ring_header_t) <= 64, "ring header must fit in one cache line");
@@ -113,6 +114,12 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
 
 int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms);
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring);
+
+/* Consumer → producer IDR request via atomic flag in ring header.
+ * Consumer calls request_idr after EOVERFLOW to get a keyframe fast.
+ * Producer calls check_idr in its encode loop and clears the flag. */
+void rss_ring_request_idr(rss_ring_t *ring);
+int rss_ring_check_idr(rss_ring_t *ring); /* returns 1 and clears if set */
 
 /* ------------------------------------------------------------------ */
 /*  OSD SHM Double-Buffer (section 2.2)                               */

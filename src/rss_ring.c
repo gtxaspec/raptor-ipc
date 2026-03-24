@@ -293,7 +293,8 @@ rss_ring_t *rss_ring_open(const char *name)
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
 
-    ring->shm_fd = shm_open(shm_name, O_RDONLY, 0);
+    /* O_RDWR needed for consumer IDR request (atomic write to header) */
+    ring->shm_fd = shm_open(shm_name, O_RDWR, 0);
     if (ring->shm_fd < 0)
         goto fail;
 
@@ -304,8 +305,8 @@ rss_ring_t *rss_ring_open(const char *name)
 
     ring->total_size = (size_t)st.st_size;
 
-    /* Map the entire segment read-only. Consumers only read. */
-    void *base = mmap(NULL, ring->total_size, PROT_READ, MAP_SHARED, ring->shm_fd, 0);
+    /* PROT_WRITE needed for IDR request flag (atomic store to header) */
+    void *base = mmap(NULL, ring->total_size, PROT_READ | PROT_WRITE, MAP_SHARED, ring->shm_fd, 0);
     if (base == MAP_FAILED)
         goto fail;
 
@@ -442,4 +443,18 @@ int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring)
 {
     return ring ? ring->header : NULL;
+}
+
+void rss_ring_request_idr(rss_ring_t *ring)
+{
+    if (ring && ring->header)
+        atomic_store_explicit(&ring->header->idr_request, 1, memory_order_relaxed);
+}
+
+int rss_ring_check_idr(rss_ring_t *ring)
+{
+    if (!ring || !ring->header)
+        return 0;
+    /* Atomic exchange: read and clear in one operation */
+    return atomic_exchange_explicit(&ring->header->idr_request, 0, memory_order_relaxed);
 }
