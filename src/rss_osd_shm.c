@@ -221,7 +221,7 @@ rss_osd_shm_t *rss_osd_open(const char *name)
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
 
-    shm->shm_fd = shm_open(shm_name, O_RDONLY, 0);
+    shm->shm_fd = shm_open(shm_name, O_RDWR, 0);
     if (shm->shm_fd < 0)
         goto fail;
 
@@ -231,7 +231,8 @@ rss_osd_shm_t *rss_osd_open(const char *name)
 
     shm->total_size = (size_t)st.st_size;
 
-    void *base = mmap(NULL, shm->total_size, PROT_READ, MAP_SHARED, shm->shm_fd, 0);
+    /* Consumer needs PROT_WRITE for clear_dirty (atomic_store on dirty flag) */
+    void *base = mmap(NULL, shm->total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm->shm_fd, 0);
     if (base == MAP_FAILED)
         goto fail;
 
