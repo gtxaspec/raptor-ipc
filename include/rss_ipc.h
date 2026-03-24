@@ -42,8 +42,9 @@ typedef struct {
     uint8_t profile; /* H.264 profile_idc (66=Base,77=Main,100=High) */
     uint8_t level;   /* H.264 level_idc (30,31,40,51...)     */
     uint16_t _reserved;
-    uint32_t magic;
+    _Atomic uint32_t magic;   /* RSS_RING_MAGIC — written last as ready flag */
     uint32_t version;
+    _Atomic uint32_t incarnation; /* incremented each time ring is recreated */
     char pad[0] __attribute__((aligned(64)));
 } rss_ring_header_t;
 

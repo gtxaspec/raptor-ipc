@@ -58,6 +58,7 @@ static int futex_wake(uint32_t *addr, int count)
 struct rss_ring {
     rss_ring_header_t *header;
     rss_ring_slot_t *slots;
+    uint32_t open_incarnation; /* incarnation at time of open */
     uint8_t *data;
     size_t total_size;
     int shm_fd;
@@ -129,18 +130,25 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
 
     ring_set_pointers(ring, base, slot_count);
 
-    /* Initialise header. */
+    /* Initialise header. Magic written LAST with release ordering
+     * so consumers see all fields initialized before magic becomes valid. */
     memset(ring->header, 0, PAGE_SIZE);
     atomic_store_explicit(&ring->header->write_seq, 0, memory_order_relaxed);
     ring->header->slot_count = slot_count;
     ring->header->data_size = data_size;
     atomic_store_explicit(&ring->header->data_head, 0, memory_order_relaxed);
-    ring->header->magic = RSS_RING_MAGIC;
     ring->header->version = RSS_RING_VERSION;
+    atomic_store_explicit(&ring->header->incarnation,
+                          atomic_load_explicit(&ring->header->incarnation, memory_order_relaxed) + 1,
+                          memory_order_relaxed);
 
     /* Initialise all slot sequences to 0 (no valid data). */
     for (uint32_t i = 0; i < slot_count; i++)
         atomic_store_explicit(&ring->slots[i].seq, 0, memory_order_relaxed);
+
+    /* Write magic last — release fence ensures all above writes are
+     * visible to consumers before they see valid magic. */
+    atomic_store_explicit(&ring->header->magic, RSS_RING_MAGIC, memory_order_release);
 
     /* Producer uses futex on write_seq for consumer notification. */
 
@@ -299,14 +307,17 @@ rss_ring_t *rss_ring_open(const char *name)
     if (base == MAP_FAILED)
         goto fail;
 
-    /* Peek at the header to read slot_count before setting pointers. */
+    /* Peek at the header — acquire-load magic to ensure all header
+     * fields are visible (pairs with producer's release store). */
     rss_ring_header_t *hdr = (rss_ring_header_t *)base;
-    if (hdr->magic != RSS_RING_MAGIC || hdr->version != RSS_RING_VERSION) {
+    uint32_t m = atomic_load_explicit(&hdr->magic, memory_order_acquire);
+    if (m != RSS_RING_MAGIC || hdr->version != RSS_RING_VERSION) {
         munmap(base, ring->total_size);
         goto fail;
     }
 
     ring_set_pointers(ring, base, hdr->slot_count);
+    ring->open_incarnation = atomic_load_explicit(&hdr->incarnation, memory_order_relaxed);
 
     /* Consumer uses futex on write_seq for notification — no eventfd needed. */
 
@@ -340,6 +351,13 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
         return -EINVAL;
 
     rss_ring_header_t *hdr = ring->header;
+
+    /* Check incarnation — if the producer recreated the ring, our
+     * state (read_seq, mmap) is stale. Consumer must re-open. */
+    uint32_t inc = atomic_load_explicit(&hdr->incarnation, memory_order_acquire);
+    if (inc != ring->open_incarnation)
+        return RSS_EOVERFLOW;
+
     uint32_t slot_count = hdr->slot_count;
 
     /* Load write_seq with acquire -- pairs with the producer's release
