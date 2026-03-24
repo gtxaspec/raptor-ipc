@@ -38,6 +38,8 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Cross-process futex on SHM: FUTEX_WAIT/FUTEX_WAKE without FUTEX_PRIVATE_FLAG.
+ * Private flag would use process-local hash — must NOT be set for shared memory. */
 static int futex_wait(uint32_t *addr, uint32_t expected, const struct timespec *timeout)
 {
     return (int)syscall(SYS_futex, addr, FUTEX_WAIT, expected, timeout, NULL, 0);

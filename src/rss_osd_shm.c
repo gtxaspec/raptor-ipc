@@ -244,14 +244,11 @@ rss_osd_shm_t *rss_osd_open(const char *name)
 
     osd_set_pointers(shm, base, hdr->buf_size);
 
-    /* Consumer creates its own eventfd for rss_osd_get_eventfd().
-     * In practice, the producer's eventfd is passed via SCM_RIGHTS
-     * or inherited. */
+    /* Cross-process notification uses the atomic dirty flag in SHM,
+     * NOT eventfd (eventfd is per-process, not shared). Consumer
+     * polls rss_osd_check_dirty() which loads the atomic flag.
+     * The eventfd here is unused but kept for potential future use. */
     shm->event_fd = eventfd(0, EFD_NONBLOCK);
-    if (shm->event_fd < 0) {
-        munmap(base, shm->total_size);
-        goto fail;
-    }
 
     return shm;
 

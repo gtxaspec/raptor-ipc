@@ -30,23 +30,35 @@ extern "C" {
 
 #define RSS_EOVERFLOW (-75) /* consumer fell behind */
 
-typedef struct {
-    _Atomic uint64_t write_seq; /* monotonic frame sequence             */
-    uint32_t slot_count;        /* number of slots (power of 2)         */
-    uint32_t data_size;         /* total data region size in bytes      */
-    _Atomic uint32_t data_head; /* next write offset in data region     */
-    uint32_t stream_id;         /* 0=main, 1=sub, 2=jpeg, 0x10=audio   */
-    uint32_t codec;             /* rss_codec_t value                    */
+/*
+ * Ring header — lives at offset 0 of the SHM segment, cache-line aligned.
+ *
+ * Memory ordering contract:
+ *   write_seq: producer stores with memory_order_release after writing
+ *              slot + data. Consumer loads with memory_order_acquire.
+ *   magic:     producer stores with memory_order_release LAST during init.
+ *              Consumer loads with memory_order_acquire to gate header reads.
+ *   data_head: producer-only, relaxed ordering (no consumer reads).
+ *   incarnation: relaxed (checked against stored copy in consumer struct).
+ */
+typedef struct __attribute__((aligned(64))) {
+    _Atomic uint64_t write_seq; /* monotonic frame sequence (release/acquire) */
+    uint32_t slot_count;        /* number of slots (power of 2)               */
+    uint32_t data_size;         /* total data region size in bytes             */
+    _Atomic uint32_t data_head; /* next write offset in data region (relaxed)  */
+    uint32_t stream_id;         /* 0=main, 1=sub, 2=jpeg, 0x10=audio          */
+    uint32_t codec;             /* rss_codec_t value                           */
     uint32_t width, height;
     uint32_t fps_num, fps_den;
-    uint8_t profile; /* H.264 profile_idc (66=Base,77=Main,100=High) */
-    uint8_t level;   /* H.264 level_idc (30,31,40,51...)     */
+    uint8_t profile;            /* H.264 profile_idc (66=Base,77=Main,100=High) */
+    uint8_t level;              /* H.264 level_idc (30,31,40,51...)            */
     uint16_t _reserved;
-    _Atomic uint32_t magic;   /* RSS_RING_MAGIC — written last as ready flag */
+    _Atomic uint32_t magic;     /* RSS_RING_MAGIC — written last (release)     */
     uint32_t version;
-    _Atomic uint32_t incarnation; /* incremented each time ring is recreated */
-    char pad[0] __attribute__((aligned(64)));
+    _Atomic uint32_t incarnation; /* incremented each create (crash detection)  */
 } rss_ring_header_t;
+
+_Static_assert(sizeof(rss_ring_header_t) <= 64, "ring header must fit in one cache line");
 
 typedef struct {
     _Atomic uint64_t seq; /* sequence number when written         */
