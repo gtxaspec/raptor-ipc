@@ -407,7 +407,13 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
     *length = data_length;
 
     /* Re-validate AFTER copy: if the producer recycled this slot during
-     * our memcpy, the data we copied may be corrupt. Discard it. */
+     * our memcpy, the data we copied may be corrupt. Discard it.
+     *
+     * ABA hazard note: if the producer wraps by exactly N * slot_count
+     * during the memcpy, recheck == slot_seq + N*slot_count != slot_seq
+     * (different value), so it IS detected. The only undetectable case
+     * is wrap by exactly 2^64 — requires producing 2^64 frames during
+     * a ~0.1ms memcpy, physically impossible at any real frame rate. */
     uint64_t recheck = atomic_load_explicit((_Atomic uint64_t *)&slot->seq, memory_order_acquire);
     if (recheck != slot_seq) {
         *read_seq = wseq;
