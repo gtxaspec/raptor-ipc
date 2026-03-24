@@ -201,11 +201,16 @@ int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_co
     uint32_t data_size = hdr->data_size;
     uint32_t slot_count = hdr->slot_count;
 
+    /* Frame larger than entire data region — reject. */
     if (length > data_size)
         return -ENOSPC;
 
     /* Allocate space in the circular data region.
-     * If the frame doesn't fit before the end, skip to offset 0. */
+     * If the frame doesn't fit in the remaining tail, skip to offset 0
+     * (waste the tail, bounded at one frame per wrap). Frames are NOT
+     * split across the wrap boundary — each frame is contiguous.
+     * Consumers MUST follow slots in sequence order; data_offset is
+     * not monotonically increasing due to wrap-back. */
     uint32_t head = atomic_load_explicit(&hdr->data_head, memory_order_relaxed);
     uint32_t remaining = data_size - head;
     uint32_t offset;
