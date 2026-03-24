@@ -78,8 +78,26 @@ void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t cod
 /* Consumer API */
 rss_ring_t *rss_ring_open(const char *name);
 void rss_ring_close(rss_ring_t *ring);
-int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data, uint32_t *length,
-                  rss_ring_slot_t *meta);
+
+/*
+ * rss_ring_read -- copy-on-read from the ring buffer.
+ *
+ * Copies frame data into the caller's buffer, then re-validates that
+ * the slot wasn't recycled during the copy. This eliminates the race
+ * window between reading the data pointer and the producer overwriting
+ * the data region.
+ *
+ * dest:      caller-owned buffer to copy frame data into
+ * dest_size: size of dest buffer in bytes
+ * length:    [out] actual frame data length (may be < dest_size)
+ * meta:      [out] slot metadata (timestamp, nal_type, is_key)
+ *
+ * Returns 0 on success, RSS_EOVERFLOW if consumer fell behind,
+ * -ENOSPC if frame is larger than dest_size, -EAGAIN if no new data.
+ */
+int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t dest_size,
+                  uint32_t *length, rss_ring_slot_t *meta);
+
 int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms);
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring);
 

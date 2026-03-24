@@ -333,10 +333,10 @@ void rss_ring_close(rss_ring_t *ring)
     free(ring);
 }
 
-int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data, uint32_t *length,
-                  rss_ring_slot_t *meta)
+int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t dest_size,
+                  uint32_t *length, rss_ring_slot_t *meta)
 {
-    if (!ring || !read_seq || !data || !length)
+    if (!ring || !read_seq || !dest || !length)
         return -EINVAL;
 
     rss_ring_header_t *hdr = ring->header;
@@ -346,15 +346,11 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data, ui
      * store, ensuring all slot and data writes are visible. */
     uint64_t wseq = atomic_load_explicit(&hdr->write_seq, memory_order_acquire);
 
-    if (*read_seq >= wseq) {
-        /* No new frames available. */
+    if (*read_seq >= wseq)
         return -EAGAIN;
-    }
 
-    /* Check for overflow: consumer fell behind by >= slot_count frames.
-     * Skip to the latest frame to recover. */
+    /* Check for overflow: consumer fell behind by >= slot_count frames. */
     if (wseq - *read_seq >= slot_count) {
-        /* Jump to latest frame so consumer catches up immediately */
         *read_seq = wseq;
         return RSS_EOVERFLOW;
     }
@@ -363,33 +359,34 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data, ui
     uint32_t idx = (uint32_t)(*read_seq % slot_count);
     const rss_ring_slot_t *slot = &ring->slots[idx];
 
-    /* Validate that the slot's sequence matches what we expect.
-     * A mismatch means the producer has wrapped past us in the slot
-     * array -- treat as overflow. */
+    /* Validate that the slot's sequence matches what we expect. */
     uint64_t slot_seq = atomic_load_explicit((_Atomic uint64_t *)&slot->seq, memory_order_acquire);
     if (slot_seq != *read_seq) {
-        /* Slot was reused. Advance to oldest valid. */
-        *read_seq = wseq - slot_count + 1;
-        idx = (uint32_t)(*read_seq % slot_count);
-        slot = &ring->slots[idx];
-
-        *data = ring->data + slot->data_offset;
-        *length = slot->data_length;
-        if (meta)
-            *meta = *slot;
-
-        (*read_seq)++;
+        *read_seq = wseq;
         return RSS_EOVERFLOW;
     }
 
-    *data = ring->data + slot->data_offset;
-    *length = slot->data_length;
+    /* Read slot metadata before copy (producer could recycle after). */
+    uint32_t data_offset = slot->data_offset;
+    uint32_t data_length = slot->data_length;
+
+    if (data_length > dest_size) {
+        /* Frame too large for caller's buffer — skip it. */
+        (*read_seq)++;
+        *length = data_length;
+        return -ENOSPC;
+    }
+
+    /* Copy frame data into caller's buffer. */
+    memcpy(dest, ring->data + data_offset, data_length);
+
     if (meta)
         *meta = *slot;
 
-    /* Re-validate: check that the producer hasn't overwritten this slot
-     * while we were reading its metadata. If the seq changed, the data
-     * region is potentially corrupt. */
+    *length = data_length;
+
+    /* Re-validate AFTER copy: if the producer recycled this slot during
+     * our memcpy, the data we copied may be corrupt. Discard it. */
     uint64_t recheck = atomic_load_explicit((_Atomic uint64_t *)&slot->seq, memory_order_acquire);
     if (recheck != slot_seq) {
         *read_seq = wseq;
