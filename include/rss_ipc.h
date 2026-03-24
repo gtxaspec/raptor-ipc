@@ -65,7 +65,7 @@ typedef struct {
     _Atomic uint64_t seq; /* sequence number when written         */
     uint32_t data_offset; /* offset into data region              */
     uint32_t data_length; /* frame payload size in bytes          */
-    int64_t timestamp;    /* capture timestamp (us)               */
+    int64_t timestamp;    /* HAL capture timestamp (us, IMP_System clock) */
     uint16_t nal_type;    /* NAL type for video, codec for audio  */
     uint8_t is_key;       /* 1 if IDR / keyframe                  */
     uint8_t _pad;
