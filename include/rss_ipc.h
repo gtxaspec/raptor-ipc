@@ -139,6 +139,8 @@ void rss_osd_close(rss_osd_shm_t *shm);
 const uint8_t *rss_osd_get_active_buffer(rss_osd_shm_t *shm, uint32_t *width, uint32_t *height);
 int rss_osd_check_dirty(rss_osd_shm_t *shm);
 void rss_osd_clear_dirty(rss_osd_shm_t *shm);
+void rss_osd_heartbeat(rss_osd_shm_t *shm);
+int rss_osd_get_fd(rss_osd_shm_t *shm);
 int rss_osd_get_eventfd(rss_osd_shm_t *shm);
 
 /* ------------------------------------------------------------------ */

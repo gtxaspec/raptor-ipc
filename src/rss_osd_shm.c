@@ -48,6 +48,7 @@ typedef struct {
     _Atomic int dirty;      /* 1 = active_buf has new data */
     uint32_t magic;
     uint32_t version;
+    uint32_t _reserved;
 } rss_osd_header_t;
 
 struct rss_osd_shm {
@@ -126,6 +127,7 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height)
     atomic_store_explicit(&shm->header->dirty, 0, memory_order_relaxed);
     shm->header->magic = RSS_OSD_MAGIC;
     shm->header->version = RSS_OSD_VERSION;
+    shm->header->_reserved = 0;
 
     /* Clear both buffers. */
     memset(shm->buf[0], 0, buf_size);
@@ -306,6 +308,20 @@ void rss_osd_clear_dirty(rss_osd_shm_t *shm)
         return;
 
     atomic_store_explicit(&shm->header->dirty, 0, memory_order_relaxed);
+}
+
+void rss_osd_heartbeat(rss_osd_shm_t *shm)
+{
+    if (!shm || !shm->is_producer)
+        return;
+    /* Set dirty without swapping buffers — tells consumer we're alive
+     * without changing displayed content. */
+    atomic_store_explicit(&shm->header->dirty, 1, memory_order_release);
+}
+
+int rss_osd_get_fd(rss_osd_shm_t *shm)
+{
+    return shm ? shm->shm_fd : -1;
 }
 
 int rss_osd_get_eventfd(rss_osd_shm_t *shm)
