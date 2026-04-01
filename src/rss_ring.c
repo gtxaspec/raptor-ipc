@@ -141,7 +141,8 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
     atomic_store_explicit(&ring->header->data_head, 0, memory_order_relaxed);
     ring->header->version = RSS_RING_VERSION;
     atomic_store_explicit(&ring->header->incarnation,
-                          atomic_load_explicit(&ring->header->incarnation, memory_order_relaxed) + 1,
+                          atomic_load_explicit(&ring->header->incarnation, memory_order_relaxed) +
+                              1,
                           memory_order_relaxed);
 
     /* Initialise all slot sequences to 0 (no valid data). */
@@ -189,10 +190,12 @@ int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_co
     if (!ring || !ring->is_producer || !iov || iov_count == 0)
         return -EINVAL;
 
-    /* Compute total length */
+    /* Compute total length with overflow check */
     uint32_t length = 0;
-    for (uint32_t i = 0; i < iov_count; i++)
-        length += iov[i].length;
+    for (uint32_t i = 0; i < iov_count; i++) {
+        if (__builtin_add_overflow(length, iov[i].length, &length))
+            return -EOVERFLOW;
+    }
 
     if (length == 0)
         return -EINVAL;
