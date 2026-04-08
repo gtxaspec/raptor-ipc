@@ -50,14 +50,14 @@ typedef struct __attribute__((aligned(64))) {
     uint32_t codec;             /* rss_codec_t value                           */
     uint32_t width, height;
     uint32_t fps_num, fps_den;
-    uint8_t profile;            /* H.264 profile_idc (66=Base,77=Main,100=High) */
-    uint8_t level;              /* H.264 level_idc (30,31,40,51...)            */
+    uint8_t profile; /* H.264 profile_idc (66=Base,77=Main,100=High) */
+    uint8_t level;   /* H.264 level_idc (30,31,40,51...)            */
     uint16_t _reserved;
-    _Atomic uint32_t magic;     /* RSS_RING_MAGIC — written last (release)     */
+    _Atomic uint32_t magic; /* RSS_RING_MAGIC — written last (release)     */
     uint32_t version;
-    _Atomic uint32_t incarnation; /* incremented each create (crash detection)  */
-    _Atomic uint32_t idr_request;    /* consumer sets to 1 to request keyframe  */
-    _Atomic uint32_t reader_count;   /* demand count (acquire/release, not open)  */
+    _Atomic uint32_t incarnation;  /* incremented each create (crash detection)  */
+    _Atomic uint32_t idr_request;  /* consumer sets to 1 to request keyframe  */
+    _Atomic uint32_t reader_count; /* demand count (acquire/release, not open)  */
 #define RSS_RING_MAX_READERS 4
     _Atomic uint32_t reader_pids[RSS_RING_MAX_READERS]; /* PIDs for crash detection */
 } rss_ring_header_t;
