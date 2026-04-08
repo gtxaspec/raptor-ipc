@@ -24,7 +24,7 @@ extern "C" {
 /* ------------------------------------------------------------------ */
 
 #define RSS_RING_MAGIC 0x52535352 /* "RSSR" */
-#define RSS_RING_VERSION 1
+#define RSS_RING_VERSION 2
 #define RSS_RING_MAX_SLOTS 64
 #define RSS_RING_SHM_PREFIX "/rss_ring_"
 
@@ -56,10 +56,13 @@ typedef struct __attribute__((aligned(64))) {
     _Atomic uint32_t magic;     /* RSS_RING_MAGIC — written last (release)     */
     uint32_t version;
     _Atomic uint32_t incarnation; /* incremented each create (crash detection)  */
-    _Atomic uint32_t idr_request; /* consumer sets to 1 to request keyframe     */
+    _Atomic uint32_t idr_request;    /* consumer sets to 1 to request keyframe  */
+    _Atomic uint32_t reader_count;   /* demand count (acquire/release, not open)  */
+#define RSS_RING_MAX_READERS 4
+    _Atomic uint32_t reader_pids[RSS_RING_MAX_READERS]; /* PIDs for crash detection */
 } rss_ring_header_t;
 
-_Static_assert(sizeof(rss_ring_header_t) <= 64, "ring header must fit in one cache line");
+_Static_assert(sizeof(rss_ring_header_t) <= 128, "ring header must fit in header page");
 
 typedef struct {
     _Atomic uint64_t seq; /* sequence number when written         */
@@ -120,6 +123,14 @@ const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring);
  * Producer calls check_idr in its encode loop and clears the flag. */
 void rss_ring_request_idr(rss_ring_t *ring);
 int rss_ring_check_idr(rss_ring_t *ring); /* returns 1 and clears if set */
+
+/* Demand signaling: consumers call acquire/release to indicate they
+ * actively want data. Producers can check reader_count to decide
+ * whether to encode. open/close do NOT touch the counter. */
+void rss_ring_acquire(rss_ring_t *ring);
+void rss_ring_release(rss_ring_t *ring);
+uint32_t rss_ring_reader_count(rss_ring_t *ring);
+uint32_t rss_ring_reap_dead_readers(rss_ring_t *ring);
 
 /* ------------------------------------------------------------------ */
 /*  OSD SHM Double-Buffer (section 2.2)                               */

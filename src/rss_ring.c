@@ -26,6 +26,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <limits.h>
 #include <linux/futex.h>
 #include <stdbool.h>
@@ -471,4 +472,80 @@ int rss_ring_check_idr(rss_ring_t *ring)
         return 0;
     /* Atomic exchange: read and clear in one operation */
     return atomic_exchange_explicit(&ring->header->idr_request, 0, memory_order_relaxed);
+}
+
+void rss_ring_acquire(rss_ring_t *ring)
+{
+    if (!ring || !ring->header)
+        return;
+    atomic_fetch_add_explicit(&ring->header->reader_count, 1, memory_order_relaxed);
+
+    /* Register PID for crash detection */
+    uint32_t pid = (uint32_t)getpid();
+    for (int i = 0; i < RSS_RING_MAX_READERS; i++) {
+        uint32_t expected = 0;
+        if (atomic_compare_exchange_strong_explicit(&ring->header->reader_pids[i],
+                                                    &expected, pid,
+                                                    memory_order_relaxed,
+                                                    memory_order_relaxed))
+            break;
+    }
+}
+
+void rss_ring_release(rss_ring_t *ring)
+{
+    if (!ring || !ring->header)
+        return;
+    atomic_fetch_sub_explicit(&ring->header->reader_count, 1, memory_order_release);
+
+    /* Unregister PID */
+    uint32_t pid = (uint32_t)getpid();
+    for (int i = 0; i < RSS_RING_MAX_READERS; i++) {
+        uint32_t expected = pid;
+        if (atomic_compare_exchange_strong_explicit(&ring->header->reader_pids[i],
+                                                    &expected, 0,
+                                                    memory_order_relaxed,
+                                                    memory_order_relaxed))
+            break;
+    }
+}
+
+uint32_t rss_ring_reader_count(rss_ring_t *ring)
+{
+    if (!ring || !ring->header)
+        return 0;
+    return atomic_load_explicit(&ring->header->reader_count, memory_order_relaxed);
+}
+
+uint32_t rss_ring_reap_dead_readers(rss_ring_t *ring)
+{
+    if (!ring || !ring->header)
+        return 0;
+
+    uint32_t reaped = 0;
+    uint32_t live = 0;
+    for (int i = 0; i < RSS_RING_MAX_READERS; i++) {
+        uint32_t pid = atomic_load_explicit(&ring->header->reader_pids[i],
+                                            memory_order_relaxed);
+        if (pid == 0)
+            continue;
+        if (kill((pid_t)pid, 0) == -1 && errno == ESRCH) {
+            /* Process is dead — clear slot */
+            atomic_store_explicit(&ring->header->reader_pids[i], 0,
+                                  memory_order_relaxed);
+            reaped++;
+        } else {
+            live++;
+        }
+    }
+
+    /* Reconcile: reset reader_count to match live PIDs.
+     * Handles orphaned counts from unclean shutdowns. */
+    uint32_t count = atomic_load_explicit(&ring->header->reader_count,
+                                          memory_order_relaxed);
+    if (count != live)
+        atomic_store_explicit(&ring->header->reader_count, live,
+                              memory_order_relaxed);
+
+    return reaped + (count > live ? count - live : 0);
 }
