@@ -190,7 +190,9 @@ rss_ctrl_t *rss_ctrl_listen(const char *sock_path)
     if (listen(ctrl->listen_fd, RSS_CTRL_BACKLOG) < 0)
         goto fail;
 
-    /* Make the socket accessible. */
+    /* 0666: single-user embedded camera. All daemons and raptorctl run
+     * as root; if root is gained the attacker already has full system
+     * access. No authentication on the control socket by design. */
     chmod(sock_path, 0666);
 
     return ctrl;

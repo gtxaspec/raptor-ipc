@@ -104,6 +104,7 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height)
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
 
+    /* 0666: single-user embedded camera; see rss_ring.c for rationale. */
     shm->shm_fd = shm_open(shm_name, O_CREAT | O_RDWR | O_TRUNC, 0666);
     if (shm->shm_fd < 0)
         goto fail;
