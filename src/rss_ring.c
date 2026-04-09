@@ -51,6 +51,14 @@ static int futex_wake(uint32_t *addr, int count)
     return (int)syscall(SYS_futex, addr, FUTEX_WAKE, count, NULL, NULL, 0);
 }
 
+/* Futex operates on a uint32_t. We cast &write_seq (uint64_t) to uint32_t*,
+ * which gives us the low 32 bits on little-endian — the part that changes
+ * with every publish. On big-endian this would read the high 32 bits
+ * (stays 0 for ~4 billion publishes) and futex_wait would never wake.
+ * All Ingenic T-series SoCs are MIPS little-endian. */
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+               "ring futex assumes little-endian (write_seq low 32 bits)");
+
 /* Page size for alignment. */
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
