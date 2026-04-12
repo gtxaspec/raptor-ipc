@@ -10,7 +10,7 @@ LIB     := librss_ipc.so
 all: $(LIB)
 
 $(LIB): $(OBJS)
-	$(CC) -shared -Wl,-soname,librss_ipc.so -o $@ $^
+	$(CC) -shared -Wl,-soname,librss_ipc.so -Wl,-Bsymbolic -o $@ $^
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
