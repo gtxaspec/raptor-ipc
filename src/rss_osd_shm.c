@@ -87,6 +87,12 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height)
     if (!name || width == 0 || height == 0)
         return NULL;
 
+    /* Guard against integer overflow in stride (width*4) and
+     * buf_size (stride*height). 8192x8192 is far beyond any OSD
+     * use case and keeps both products within uint32_t range. */
+    if (width > 8192 || height > 8192)
+        return NULL;
+
     rss_osd_shm_t *shm = calloc(1, sizeof(*shm));
     if (!shm)
         return NULL;
@@ -190,8 +196,15 @@ void rss_osd_publish(rss_osd_shm_t *shm)
     int active = atomic_load_explicit(&shm->header->active_buf, memory_order_relaxed);
     int new_active = 1 - active;
 
-    /* Release ordering: all bitmap writes must be visible to the
-     * consumer before it sees the new active_buf. */
+    /* Two stores with release ordering. The consumer acquires on dirty,
+     * which transitively publishes the active_buf store (sequenced-before
+     * in program order). C11 guarantees: if the consumer sees dirty=1
+     * via acquire, all prior stores (including active_buf) are visible.
+     *
+     * Double-buffer note: if the producer publishes twice before the
+     * consumer reads, it draws into the buffer the consumer may be
+     * reading — causing a single frame of OSD tearing. This is inherent
+     * to double-buffering; acceptable for OSD overlays at 2-5 fps. */
     atomic_store_explicit(&shm->header->active_buf, new_active, memory_order_release);
     atomic_store_explicit(&shm->header->dirty, 1, memory_order_release);
 
@@ -247,11 +260,9 @@ rss_osd_shm_t *rss_osd_open(const char *name)
 
     osd_set_pointers(shm, base, hdr->buf_size);
 
-    /* Cross-process notification uses the atomic dirty flag in SHM,
-     * NOT eventfd (eventfd is per-process, not shared). Consumer
-     * polls rss_osd_check_dirty() which loads the atomic flag.
-     * The eventfd here is unused but kept for potential future use. */
-    shm->event_fd = eventfd(0, EFD_NONBLOCK);
+    /* Consumer notification is via the atomic dirty flag in SHM
+     * (polled by rss_osd_check_dirty), not eventfd. eventfd is
+     * per-process and cannot be shared across the SHM boundary. */
 
     return shm;
 
