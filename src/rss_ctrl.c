@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -184,16 +185,17 @@ rss_ctrl_t *rss_ctrl_listen(const char *sock_path)
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", sock_path);
 
-    if (bind(ctrl->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    /* Set umask to 0 around bind so the socket is created with 0666
+     * atomically — no window where umask-derived restrictive permissions
+     * would prevent other daemons from connecting. */
+    mode_t old_umask = umask(0);
+    int bind_ret = bind(ctrl->listen_fd, (struct sockaddr *)&addr, sizeof(addr));
+    umask(old_umask);
+    if (bind_ret < 0)
         goto fail;
 
     if (listen(ctrl->listen_fd, RSS_CTRL_BACKLOG) < 0)
         goto fail;
-
-    /* 0666: single-user embedded camera. All daemons and raptorctl run
-     * as root; if root is gained the attacker already has full system
-     * access. No authentication on the control socket by design. */
-    chmod(sock_path, 0666);
 
     return ctrl;
 
@@ -237,10 +239,17 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
     if (client_fd < 0)
         return -errno;
 
+    /* Set write timeout so a slow/stalled client can't block the daemon
+     * indefinitely. Read side is already covered by poll() in read_exact. */
+    struct timeval snd_tv = {.tv_sec = 5, .tv_usec = 0};
+    (void)setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
+
     int ret = -1;
     char *cmd = NULL;
 
-    /* Read the request (with a generous timeout for slow clients). */
+    /* Read the request (5s timeout per poll — a client trickling one byte
+     * every 4.9s could hold the handler longer, but on a root-only local
+     * Unix socket this is not a practical attack vector). */
     int msg_len = read_message(client_fd, &cmd, 5000);
     if (msg_len < 0) {
         ret = msg_len;
@@ -252,7 +261,9 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
         goto done;
     }
 
-    /* Invoke the handler callback. */
+    /* Invoke the handler callback.
+     * 64KB on stack — safe on Linux default 8MB stack. All raptor daemons
+     * use default stack size; this runs on the main thread (not worker). */
     char resp_buf[RSS_CTRL_MAX_MSG];
     int resp_len = handler(cmd, resp_buf, sizeof(resp_buf), userdata);
 
