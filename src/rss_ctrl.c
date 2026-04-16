@@ -261,15 +261,18 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
         goto done;
     }
 
-    /* Invoke the handler callback.
-     * 64KB on stack — safe on Linux default 8MB stack. All raptor daemons
-     * use default stack size; this runs on the main thread (not worker). */
-    char resp_buf[RSS_CTRL_MAX_MSG];
-    int resp_len = handler(cmd, resp_buf, sizeof(resp_buf), userdata);
+    /* Invoke the handler callback. Heap-allocated — 64KB exceeds what
+     * MIPS can allocate in a single stack frame adjustment. */
+    char *resp_buf = malloc(RSS_CTRL_MAX_MSG);
+    if (!resp_buf) {
+        ret = -ENOMEM;
+        goto done;
+    }
+    int resp_len = handler(cmd, resp_buf, RSS_CTRL_MAX_MSG, userdata);
 
     if (resp_len < 0) {
         /* Handler returned an error -- send a generic error response. */
-        resp_len = snprintf(resp_buf, sizeof(resp_buf),
+        resp_len = snprintf(resp_buf, RSS_CTRL_MAX_MSG,
                             "{\"status\":\"error\",\"code\":%d,"
                             "\"msg\":\"handler error\"}",
                             resp_len);
@@ -279,6 +282,7 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
     ret = write_message(client_fd, resp_buf, (size_t)resp_len);
 
 done:
+    free(resp_buf);
     free(cmd);
     close(client_fd);
     return ret;
