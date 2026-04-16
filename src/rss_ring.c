@@ -532,7 +532,11 @@ uint32_t rss_ring_reap_dead_readers(rss_ring_t *ring)
         if (pid == 0)
             continue;
         if (kill((pid_t)pid, 0) == -1 && errno == ESRCH) {
-            /* Process is dead — clear slot */
+            /* Process is dead — clear slot.
+             * Note: if the PID was recycled to an unrelated process, kill()
+             * returns success and the slot stays occupied until that process
+             * also exits.  Acceptable on embedded with few processes and
+             * pid_max=32768 — recycling to the same PID is very unlikely. */
             atomic_store_explicit(&ring->header->reader_pids[i], 0, memory_order_relaxed);
             reaped++;
         } else {
