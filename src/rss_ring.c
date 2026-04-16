@@ -51,13 +51,10 @@ static int futex_wake(uint32_t *addr, int count)
     return (int)syscall(SYS_futex, addr, FUTEX_WAKE, count, NULL, NULL, 0);
 }
 
-/* Futex operates on a uint32_t. We cast &write_seq (uint64_t) to uint32_t*,
- * which gives us the low 32 bits on little-endian — the part that changes
- * with every publish. On big-endian this would read the high 32 bits
- * (stays 0 for ~4 billion publishes) and futex_wait would never wake.
- * All Ingenic T-series SoCs are MIPS little-endian. */
-_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
-               "ring futex assumes little-endian (write_seq low 32 bits)");
+/* Futex operates on the dedicated futex_seq field (uint32_t) in the ring
+ * header, updated by the producer alongside write_seq.  This avoids the
+ * strict-aliasing violation of casting &write_seq (uint64_t) to uint32_t*
+ * and is endianness-independent. */
 
 /* Page size for alignment. */
 #ifndef PAGE_SIZE
@@ -148,6 +145,7 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
      * so consumers see all fields initialized before magic becomes valid. */
     memset(ring->header, 0, PAGE_SIZE);
     atomic_store_explicit(&ring->header->write_seq, 0, memory_order_relaxed);
+    atomic_store_explicit(&ring->header->futex_seq, 0, memory_order_relaxed);
     ring->header->slot_count = slot_count;
     ring->header->data_size = data_size;
     atomic_store_explicit(&ring->header->data_head, 0, memory_order_relaxed);
@@ -165,7 +163,7 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
      * visible to consumers before they see valid magic. */
     atomic_store_explicit(&ring->header->magic, RSS_RING_MAGIC, memory_order_release);
 
-    /* Producer uses futex on write_seq for consumer notification. */
+    /* Producer uses futex on futex_seq for consumer notification. */
 
     return ring;
 
@@ -263,8 +261,9 @@ int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_co
     /* Publish: release fence then store write_seq. */
     atomic_store_explicit(&hdr->write_seq, seq, memory_order_release);
 
-    /* Wake all consumers waiting on write_seq via futex. */
-    futex_wake((uint32_t *)&hdr->write_seq, INT_MAX);
+    /* Update futex word and wake consumers. */
+    atomic_store_explicit(&hdr->futex_seq, (uint32_t)seq, memory_order_release);
+    futex_wake((uint32_t *)&hdr->futex_seq, INT_MAX);
 
     return 0;
 }
@@ -451,15 +450,12 @@ int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
 
     rss_ring_header_t *hdr = ring->header;
 
-    /* Futex-wait on write_seq in shared memory.
-     * Futex operates on the low 32 bits of write_seq (little-endian).
-     * The producer calls futex_wake after each publish. */
-    uint32_t *futex_addr = (uint32_t *)&hdr->write_seq;
-    uint32_t expected = *futex_addr;
+    /* Wait on the dedicated futex_seq field (updated by producer on publish). */
+    uint32_t expected = atomic_load_explicit(&hdr->futex_seq, memory_order_acquire);
 
     struct timespec ts = {.tv_sec = timeout_ms / 1000, .tv_nsec = (timeout_ms % 1000) * 1000000L};
 
-    int ret = futex_wait(futex_addr, expected, &ts);
+    int ret = futex_wait((uint32_t *)&hdr->futex_seq, expected, &ts);
     if (ret < 0 && errno == ETIMEDOUT)
         return -ETIMEDOUT;
     /* EAGAIN means value already changed — new data available. */

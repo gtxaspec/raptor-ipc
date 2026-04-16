@@ -42,8 +42,9 @@ extern "C" {
  *   incarnation: relaxed (checked against stored copy in consumer struct).
  */
 typedef struct __attribute__((aligned(64))) {
-    _Atomic uint64_t write_seq; /* monotonic frame sequence (release/acquire) */
-    uint32_t slot_count;        /* number of slots (power of 2)               */
+    _Atomic uint64_t write_seq;     /* monotonic frame sequence (release/acquire) */
+    _Atomic uint32_t futex_seq;     /* low 32 bits of write_seq for futex wake/wait */
+    uint32_t slot_count;            /* number of slots (power of 2)               */
     uint32_t data_size;         /* total data region size in bytes             */
     _Atomic uint32_t data_head; /* next write offset in data region (relaxed)  */
     uint32_t stream_id;         /* 0=main, 1=sub, 2=jpeg, 0x10=audio          */
