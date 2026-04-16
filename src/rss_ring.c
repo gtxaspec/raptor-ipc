@@ -248,6 +248,15 @@ int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_co
     uint32_t slot_idx = (uint32_t)(seq % slot_count);
 
     rss_ring_slot_t *slot = &ring->slots[slot_idx];
+
+    /* Invalidate the slot BEFORE overwriting data. A consumer that reads
+     * this slot during the memcpy will see seq=0, fail its validation
+     * check, and retry. Without this sentinel, a consumer could pass
+     * re-validation against the stale seq if the producer wraps the
+     * entire ring during the copy (physically impossible at real frame
+     * rates, but closing the gap is cheap). */
+    atomic_store_explicit(&slot->seq, 0, memory_order_relaxed);
+
     slot->data_offset = offset;
     slot->data_length = length;
     slot->timestamp = timestamp;
@@ -255,7 +264,7 @@ int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_co
     slot->is_key = is_key;
     slot->_pad = 0;
 
-    /* Write the slot sequence (used by consumers to validate reads). */
+    /* Write the valid slot sequence AFTER data is fully written. */
     atomic_store_explicit(&slot->seq, seq, memory_order_relaxed);
 
     /* Publish: release fence then store write_seq. */
