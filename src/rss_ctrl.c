@@ -246,6 +246,7 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
 
     int ret = -1;
     char *cmd = NULL;
+    char *resp_buf = NULL;
 
     /* Read the request (5s timeout per poll — a client trickling one byte
      * every 4.9s could hold the handler longer, but on a root-only local
@@ -263,7 +264,7 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
 
     /* Invoke the handler callback. Heap-allocated — 64KB exceeds what
      * MIPS can allocate in a single stack frame adjustment. */
-    char *resp_buf = malloc(RSS_CTRL_MAX_MSG);
+    resp_buf = malloc(RSS_CTRL_MAX_MSG);
     if (!resp_buf) {
         ret = -ENOMEM;
         goto done;
