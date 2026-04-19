@@ -69,6 +69,7 @@ typedef struct __attribute__((aligned(64))) {
     uint32_t flags;                                     /* RSS_RING_FLAG_*           */
     uint32_t ref_buf_count;                             /* encoder output buffer cnt */
     uint32_t ref_rmem_size;                             /* /dev/rmem mmap size       */
+    uint32_t ref_rmem_offset;                           /* /dev/rmem mmap file offset */
     uint32_t ref_buf_stride;                            /* per-buffer size in bytes  */
     _Atomic uint32_t ref_buf_gen[RSS_RING_MAX_REF_BUFS]; /* per-buffer generation   */
 } rss_ring_header_t;
@@ -108,8 +109,8 @@ void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t cod
 /* Reference mode: frame data in external /dev/rmem instead of ring data region.
  * Eliminates the publish-side memcpy. Consumers transparently mmap /dev/rmem
  * and read from it via the standard rss_ring_read API. */
-int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint8_t buf_count,
-                           uint32_t buf_stride);
+int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint32_t rmem_offset,
+                           uint8_t buf_count, uint32_t buf_stride);
 int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length,
                          int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint8_t buf_idx);
 

@@ -288,8 +288,8 @@ int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int
     return rss_ring_publish_iov(ring, &iov, 1, timestamp, nal_type, is_key);
 }
 
-int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint8_t buf_count,
-                           uint32_t buf_stride)
+int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint32_t rmem_offset,
+                           uint8_t buf_count, uint32_t buf_stride)
 {
     if (!ring || !ring->is_producer)
         return -EINVAL;
@@ -300,6 +300,7 @@ int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint8_t buf_co
     hdr->flags = RSS_RING_FLAG_REFMODE;
     hdr->ref_buf_count = buf_count;
     hdr->ref_rmem_size = rmem_size;
+    hdr->ref_rmem_offset = rmem_offset;
     hdr->ref_buf_stride = buf_stride;
 
     for (uint8_t i = 0; i < RSS_RING_MAX_REF_BUFS; i++)
@@ -416,7 +417,8 @@ rss_ring_t *rss_ring_open(const char *name)
     ring_set_pointers(ring, base, hdr->slot_count);
     ring->open_incarnation = atomic_load_explicit(&hdr->incarnation, memory_order_relaxed);
 
-    /* Reference mode: mmap /dev/rmem so rss_ring_read can copy from it */
+    /* Reference mode: mmap /dev/rmem so rss_ring_read can copy from it.
+     * The mmap offset must match what libimp used (rmem physical base). */
     if (hdr->flags & RSS_RING_FLAG_REFMODE) {
         ring->ref_fd = open("/dev/rmem", O_RDONLY);
         if (ring->ref_fd < 0) {
@@ -424,7 +426,7 @@ rss_ring_t *rss_ring_open(const char *name)
             goto fail;
         }
         ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED,
-                              ring->ref_fd, 0);
+                              ring->ref_fd, (off_t)hdr->ref_rmem_offset);
         if (ring->ref_data == MAP_FAILED) {
             ring->ref_data = NULL;
             close(ring->ref_fd);
