@@ -417,19 +417,25 @@ rss_ring_t *rss_ring_open(const char *name)
     ring_set_pointers(ring, base, hdr->slot_count);
     ring->open_incarnation = atomic_load_explicit(&hdr->incarnation, memory_order_relaxed);
 
-    /* Reference mode: mmap /dev/rmem so rss_ring_read can copy from it.
-     * The mmap offset must match what libimp used (rmem physical base). */
+    /* Reference mode: frame data in external shared memory.
+     * Try named POSIX SHM first (universal, works on all SoCs).
+     * Fall back to /dev/rmem for T31/T40/T41 backward compat. */
     if (hdr->flags & RSS_RING_FLAG_REFMODE) {
-        ring->ref_fd = open("/dev/rmem", O_RDONLY);
+        char enc_shm[128];
+        snprintf(enc_shm, sizeof(enc_shm), "/rss_enc_%s", ring->name);
+        ring->ref_fd = shm_open(enc_shm, O_RDONLY, 0);
         if (ring->ref_fd < 0) {
-            munmap(base, ring->total_size);
-            goto fail;
+            ring->ref_fd = open("/dev/rmem", O_RDONLY);
+            if (ring->ref_fd >= 0)
+                ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED,
+                                      ring->ref_fd, (off_t)hdr->ref_rmem_offset);
+        } else {
+            ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED,
+                                  ring->ref_fd, 0);
         }
-        ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED,
-                              ring->ref_fd, (off_t)hdr->ref_rmem_offset);
-        if (ring->ref_data == MAP_FAILED) {
+        if (!ring->ref_data || ring->ref_data == MAP_FAILED) {
             ring->ref_data = NULL;
-            close(ring->ref_fd);
+            if (ring->ref_fd >= 0) close(ring->ref_fd);
             ring->ref_fd = -1;
             munmap(base, ring->total_size);
             goto fail;
