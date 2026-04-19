@@ -24,11 +24,14 @@ extern "C" {
 /* ------------------------------------------------------------------ */
 
 #define RSS_RING_MAGIC 0x52535352 /* "RSSR" */
-#define RSS_RING_VERSION 2
+#define RSS_RING_VERSION 3
 #define RSS_RING_MAX_SLOTS 64
 #define RSS_RING_SHM_PREFIX "/rss_ring_"
 
 #define RSS_EOVERFLOW (-75) /* consumer fell behind */
+
+#define RSS_RING_FLAG_REFMODE 0x01 /* data lives in external /dev/rmem, not ring */
+#define RSS_RING_MAX_REF_BUFS 8    /* max encoder output buffers for refmode */
 
 /*
  * Ring header — lives at offset 0 of the SHM segment, cache-line aligned.
@@ -61,18 +64,25 @@ typedef struct __attribute__((aligned(64))) {
     _Atomic uint32_t reader_count; /* demand count (acquire/release, not open)  */
 #define RSS_RING_MAX_READERS 4
     _Atomic uint32_t reader_pids[RSS_RING_MAX_READERS]; /* PIDs for crash detection */
+
+    /* v3: reference mode — frame data in /dev/rmem, ring is metadata-only */
+    uint32_t flags;                                     /* RSS_RING_FLAG_*           */
+    uint32_t ref_buf_count;                             /* encoder output buffer cnt */
+    uint32_t ref_rmem_size;                             /* /dev/rmem mmap size       */
+    _Atomic uint32_t ref_buf_gen[RSS_RING_MAX_REF_BUFS]; /* per-buffer generation   */
 } rss_ring_header_t;
 
-_Static_assert(sizeof(rss_ring_header_t) <= 128, "ring header must fit in header page");
+_Static_assert(sizeof(rss_ring_header_t) <= 192, "ring header must fit in header page");
 
 typedef struct {
     _Atomic uint64_t seq; /* sequence number when written         */
-    uint32_t data_offset; /* offset into data region              */
+    uint32_t data_offset; /* offset into data/rmem region         */
     uint32_t data_length; /* frame payload size in bytes          */
     int64_t timestamp;    /* HAL capture timestamp (us, IMP_System clock) */
     uint16_t nal_type;    /* NAL type for video, codec for audio  */
     uint8_t is_key;       /* 1 if IDR / keyframe                  */
-    uint8_t _pad;
+    uint8_t buf_idx;      /* refmode: encoder buffer index        */
+    uint32_t buf_gen;     /* refmode: generation at publish time  */
 } rss_ring_slot_t;
 
 typedef struct rss_ring rss_ring_t; /* opaque */
@@ -93,6 +103,14 @@ int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_co
 void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t codec, uint32_t width,
                               uint32_t height, uint32_t fps_num, uint32_t fps_den, uint8_t profile,
                               uint8_t level);
+
+/* Reference mode: frame data in external /dev/rmem instead of ring data region.
+ * Eliminates the publish-side memcpy. Consumers transparently mmap /dev/rmem
+ * and read from it via the standard rss_ring_read API. */
+int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint8_t buf_count);
+int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length,
+                         int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint8_t buf_idx);
+
 /* Consumer API */
 rss_ring_t *rss_ring_open(const char *name);
 void rss_ring_close(rss_ring_t *ring);
@@ -118,6 +136,7 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
 
 int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms);
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring);
+uint32_t rss_ring_max_frame_size(rss_ring_t *ring);
 
 /* Consumer → producer IDR request via atomic flag in ring header.
  * Consumer calls request_idr after EOVERFLOW to get a keyframe fast.

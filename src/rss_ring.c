@@ -72,6 +72,8 @@ struct rss_ring {
     int shm_fd;
     bool is_producer;
     char name[64];
+    uint8_t *ref_data;         /* consumer: /dev/rmem mmap (NULL if embedded) */
+    int ref_fd;                /* consumer: /dev/rmem fd (-1 if not open)     */
 };
 
 /*
@@ -118,6 +120,7 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
     snprintf(ring->name, sizeof(ring->name), "%s", name);
     ring->is_producer = true;
     ring->shm_fd = -1;
+    ring->ref_fd = -1;
 
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
@@ -262,7 +265,8 @@ int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_co
     slot->timestamp = timestamp;
     slot->nal_type = nal_type;
     slot->is_key = is_key;
-    slot->_pad = 0;
+    slot->buf_idx = 0;
+    slot->buf_gen = 0;
 
     /* Write the valid slot sequence AFTER data is fully written. */
     atomic_store_explicit(&slot->seq, seq, memory_order_relaxed);
@@ -282,6 +286,65 @@ int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int
 {
     rss_iov_t iov = {.data = data, .length = length};
     return rss_ring_publish_iov(ring, &iov, 1, timestamp, nal_type, is_key);
+}
+
+int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint8_t buf_count)
+{
+    if (!ring || !ring->is_producer)
+        return -EINVAL;
+    if (buf_count == 0 || buf_count > RSS_RING_MAX_REF_BUFS || rmem_size == 0)
+        return -EINVAL;
+
+    rss_ring_header_t *hdr = ring->header;
+    hdr->flags = RSS_RING_FLAG_REFMODE;
+    hdr->ref_buf_count = buf_count;
+    hdr->ref_rmem_size = rmem_size;
+
+    for (uint8_t i = 0; i < RSS_RING_MAX_REF_BUFS; i++)
+        atomic_store_explicit(&hdr->ref_buf_gen[i], 0, memory_order_relaxed);
+
+    return 0;
+}
+
+int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length,
+                         int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint8_t buf_idx)
+{
+    if (!ring || !ring->is_producer || length == 0)
+        return -EINVAL;
+
+    rss_ring_header_t *hdr = ring->header;
+
+    if (!(hdr->flags & RSS_RING_FLAG_REFMODE))
+        return -EINVAL;
+    if (buf_idx >= hdr->ref_buf_count)
+        return -EINVAL;
+
+    uint32_t slot_count = hdr->slot_count;
+    uint64_t seq = atomic_load_explicit(&hdr->write_seq, memory_order_relaxed) + 1;
+    uint32_t slot_idx = (uint32_t)(seq % slot_count);
+    rss_ring_slot_t *slot = &ring->slots[slot_idx];
+
+    /* Bump generation for this buffer — invalidates any in-progress consumer
+     * reads of older frames in the same encoder buffer. */
+    uint32_t gen = atomic_fetch_add_explicit(&hdr->ref_buf_gen[buf_idx], 1,
+                                             memory_order_release) + 1;
+
+    atomic_store_explicit(&slot->seq, 0, memory_order_relaxed);
+
+    slot->data_offset = rmem_offset;
+    slot->data_length = length;
+    slot->timestamp = timestamp;
+    slot->nal_type = nal_type;
+    slot->is_key = is_key;
+    slot->buf_idx = buf_idx;
+    slot->buf_gen = gen;
+
+    atomic_store_explicit(&slot->seq, seq, memory_order_relaxed);
+    atomic_store_explicit(&hdr->write_seq, seq, memory_order_release);
+    atomic_store_explicit(&hdr->futex_seq, (uint32_t)seq, memory_order_release);
+    futex_wake((uint32_t *)&hdr->futex_seq, INT_MAX);
+
+    return 0;
 }
 
 void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t codec, uint32_t width,
@@ -317,6 +380,7 @@ rss_ring_t *rss_ring_open(const char *name)
     snprintf(ring->name, sizeof(ring->name), "%s", name);
     ring->is_producer = false;
     ring->shm_fd = -1;
+    ring->ref_fd = -1;
 
     char shm_name[128];
     make_shm_name(shm_name, sizeof(shm_name), name);
@@ -342,7 +406,7 @@ rss_ring_t *rss_ring_open(const char *name)
      * fields are visible (pairs with producer's release store). */
     rss_ring_header_t *hdr = (rss_ring_header_t *)base;
     uint32_t m = atomic_load_explicit(&hdr->magic, memory_order_acquire);
-    if (m != RSS_RING_MAGIC || hdr->version != RSS_RING_VERSION) {
+    if (m != RSS_RING_MAGIC || hdr->version < 2 || hdr->version > RSS_RING_VERSION) {
         munmap(base, ring->total_size);
         goto fail;
     }
@@ -350,7 +414,23 @@ rss_ring_t *rss_ring_open(const char *name)
     ring_set_pointers(ring, base, hdr->slot_count);
     ring->open_incarnation = atomic_load_explicit(&hdr->incarnation, memory_order_relaxed);
 
-    /* Consumer uses futex on write_seq for notification — no eventfd needed. */
+    /* Reference mode: mmap /dev/rmem so rss_ring_read can copy from it */
+    if (hdr->flags & RSS_RING_FLAG_REFMODE) {
+        ring->ref_fd = open("/dev/rmem", O_RDONLY);
+        if (ring->ref_fd < 0) {
+            munmap(base, ring->total_size);
+            goto fail;
+        }
+        ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED,
+                              ring->ref_fd, 0);
+        if (ring->ref_data == MAP_FAILED) {
+            ring->ref_data = NULL;
+            close(ring->ref_fd);
+            ring->ref_fd = -1;
+            munmap(base, ring->total_size);
+            goto fail;
+        }
+    }
 
     return ring;
 
@@ -365,6 +445,11 @@ void rss_ring_close(rss_ring_t *ring)
 {
     if (!ring)
         return;
+
+    if (ring->ref_data && ring->ref_data != MAP_FAILED)
+        munmap(ring->ref_data, ring->header ? ring->header->ref_rmem_size : 0);
+    if (ring->ref_fd >= 0)
+        close(ring->ref_fd);
 
     if (ring->header && ring->header != MAP_FAILED)
         munmap(ring->header, ring->total_size);
@@ -420,14 +505,16 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
     uint32_t data_length = slot->data_length;
 
     if (data_length > dest_size) {
-        /* Frame too large for caller's buffer — skip it. */
         (*read_seq)++;
         *length = data_length;
         return -ENOSPC;
     }
 
-    /* Copy frame data into caller's buffer. */
-    memcpy(dest, ring->data + data_offset, data_length);
+    /* Copy frame data: from /dev/rmem in refmode, from ring data in embedded. */
+    const uint8_t *src = ring->ref_data
+        ? ring->ref_data + data_offset
+        : ring->data + data_offset;
+    memcpy(dest, src, data_length);
 
     if (meta)
         *meta = *slot;
@@ -435,17 +522,27 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
     *length = data_length;
 
     /* Re-validate AFTER copy: if the producer recycled this slot during
-     * our memcpy, the data we copied may be corrupt. Discard it.
+     * our memcpy, the data we copied may be corrupt.
      *
-     * ABA hazard note: if the producer wraps by exactly N * slot_count
-     * during the memcpy, recheck == slot_seq + N*slot_count != slot_seq
-     * (different value), so it IS detected. The only undetectable case
-     * is wrap by exactly 2^64 — requires producing 2^64 frames during
-     * a ~0.1ms memcpy, physically impossible at any real frame rate. */
+     * ABA hazard note: producer wrapping by exactly N * slot_count during
+     * a memcpy changes recheck != slot_seq, so it IS detected. */
     uint64_t recheck = atomic_load_explicit((_Atomic uint64_t *)&slot->seq, memory_order_acquire);
     if (recheck != slot_seq) {
         *read_seq = wseq;
         return RSS_EOVERFLOW;
+    }
+
+    /* Refmode: also validate that the encoder buffer wasn't reused during
+     * the copy. The producer increments ref_buf_gen[buf_idx] before each
+     * new publish to the same buffer. */
+    if (ring->ref_data) {
+        uint8_t bi = slot->buf_idx;
+        uint32_t gen = slot->buf_gen;
+        uint32_t cur_gen = atomic_load_explicit(&hdr->ref_buf_gen[bi], memory_order_acquire);
+        if (cur_gen != gen) {
+            *read_seq = wseq;
+            return RSS_EOVERFLOW;
+        }
     }
 
     (*read_seq)++;
@@ -474,6 +571,16 @@ int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring)
 {
     return ring ? ring->header : NULL;
+}
+
+uint32_t rss_ring_max_frame_size(rss_ring_t *ring)
+{
+    if (!ring || !ring->header)
+        return 0;
+    const rss_ring_header_t *hdr = ring->header;
+    if (hdr->flags & RSS_RING_FLAG_REFMODE)
+        return hdr->ref_buf_count ? hdr->ref_rmem_size / hdr->ref_buf_count : 0;
+    return hdr->data_size;
 }
 
 void rss_ring_request_idr(rss_ring_t *ring)
