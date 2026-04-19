@@ -30,7 +30,7 @@ extern "C" {
 
 #define RSS_EOVERFLOW (-75) /* consumer fell behind */
 
-#define RSS_RING_FLAG_REFMODE 0x01 /* data lives in external /dev/rmem, not ring */
+#define RSS_RING_FLAG_REFMODE 0x01 /* data lives in external SHM or /dev/rmem */
 #define RSS_RING_MAX_REF_BUFS 8    /* max encoder output buffers for refmode */
 
 /*

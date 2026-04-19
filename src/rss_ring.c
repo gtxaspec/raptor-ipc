@@ -306,6 +306,11 @@ int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint32_t rmem_
     for (uint8_t i = 0; i < RSS_RING_MAX_REF_BUFS; i++)
         atomic_store_explicit(&hdr->ref_buf_gen[i], 0, memory_order_relaxed);
 
+    /* Re-publish magic with release ordering so consumers see the flags
+     * update. Without this, a consumer opening between create() and
+     * enable_refmode() could see flags=0 despite magic being valid. */
+    atomic_store_explicit(&hdr->magic, RSS_RING_MAGIC, memory_order_release);
+
     return 0;
 }
 
@@ -520,7 +525,13 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
         return -ENOSPC;
     }
 
-    /* Copy frame data: from /dev/rmem in refmode, from ring data in embedded. */
+    /* Bounds check: ensure offset+length doesn't exceed the backing region. */
+    uint32_t region_size = ring->ref_data ? hdr->ref_rmem_size : hdr->data_size;
+    if (data_offset > region_size || data_length > region_size - data_offset) {
+        *read_seq = wseq;
+        return RSS_EOVERFLOW;
+    }
+
     const uint8_t *src = ring->ref_data
         ? ring->ref_data + data_offset
         : ring->data + data_offset;
@@ -547,6 +558,10 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
      * new publish to the same buffer. */
     if (ring->ref_data) {
         uint8_t bi = slot->buf_idx;
+        if (bi >= RSS_RING_MAX_REF_BUFS) {
+            *read_seq = wseq;
+            return RSS_EOVERFLOW;
+        }
         uint32_t gen = slot->buf_gen;
         uint32_t cur_gen = atomic_load_explicit(&hdr->ref_buf_gen[bi], memory_order_acquire);
         if (cur_gen != gen) {
