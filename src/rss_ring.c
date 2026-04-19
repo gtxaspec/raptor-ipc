@@ -288,7 +288,8 @@ int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int
     return rss_ring_publish_iov(ring, &iov, 1, timestamp, nal_type, is_key);
 }
 
-int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint8_t buf_count)
+int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint8_t buf_count,
+                           uint32_t buf_stride)
 {
     if (!ring || !ring->is_producer)
         return -EINVAL;
@@ -299,6 +300,7 @@ int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint8_t buf_co
     hdr->flags = RSS_RING_FLAG_REFMODE;
     hdr->ref_buf_count = buf_count;
     hdr->ref_rmem_size = rmem_size;
+    hdr->ref_buf_stride = buf_stride;
 
     for (uint8_t i = 0; i < RSS_RING_MAX_REF_BUFS; i++)
         atomic_store_explicit(&hdr->ref_buf_gen[i], 0, memory_order_relaxed);
@@ -579,7 +581,7 @@ uint32_t rss_ring_max_frame_size(rss_ring_t *ring)
         return 0;
     const rss_ring_header_t *hdr = ring->header;
     if (hdr->flags & RSS_RING_FLAG_REFMODE)
-        return hdr->ref_buf_count ? hdr->ref_rmem_size / hdr->ref_buf_count : 0;
+        return hdr->ref_buf_stride ? hdr->ref_buf_stride : 262144;
     return hdr->data_size;
 }
 
