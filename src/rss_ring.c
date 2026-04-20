@@ -574,6 +574,87 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
     return 0;
 }
 
+int rss_ring_peek(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data_ptr,
+                  uint32_t *length, rss_ring_slot_t *meta)
+{
+    if (!ring || !read_seq || !data_ptr || !length)
+        return -EINVAL;
+
+    rss_ring_header_t *hdr = ring->header;
+
+    uint32_t inc = atomic_load_explicit(&hdr->incarnation, memory_order_acquire);
+    if (inc != ring->open_incarnation)
+        return RSS_EOVERFLOW;
+
+    uint32_t slot_count = hdr->slot_count;
+    uint64_t wseq = atomic_load_explicit(&hdr->write_seq, memory_order_acquire);
+
+    if (*read_seq >= wseq)
+        return -EAGAIN;
+
+    if (wseq - *read_seq >= slot_count) {
+        *read_seq = wseq;
+        return RSS_EOVERFLOW;
+    }
+
+    uint32_t idx = (uint32_t)(*read_seq % slot_count);
+    const rss_ring_slot_t *slot = &ring->slots[idx];
+
+    uint64_t slot_seq = atomic_load_explicit((_Atomic uint64_t *)&slot->seq, memory_order_acquire);
+    if (slot_seq != *read_seq) {
+        *read_seq = wseq;
+        return RSS_EOVERFLOW;
+    }
+
+    uint32_t data_offset = slot->data_offset;
+    uint32_t data_length = slot->data_length;
+
+    uint32_t region_size = ring->ref_data ? hdr->ref_rmem_size : hdr->data_size;
+    if (data_offset > region_size || data_length > region_size - data_offset) {
+        *read_seq = wseq;
+        return RSS_EOVERFLOW;
+    }
+
+    *data_ptr = ring->ref_data
+        ? ring->ref_data + data_offset
+        : ring->data + data_offset;
+    *length = data_length;
+
+    if (meta)
+        *meta = *slot;
+
+    (*read_seq)++;
+    return 0;
+}
+
+int rss_ring_peek_done(rss_ring_t *ring, const rss_ring_slot_t *meta)
+{
+    if (!ring || !meta)
+        return -EINVAL;
+
+    rss_ring_header_t *hdr = ring->header;
+
+    /* For refmode: check that the encoder buffer wasn't reused */
+    if (ring->ref_data) {
+        uint8_t bi = meta->buf_idx;
+        if (bi >= RSS_RING_MAX_REF_BUFS)
+            return RSS_EOVERFLOW;
+        uint32_t cur_gen = atomic_load_explicit(&hdr->ref_buf_gen[bi], memory_order_acquire);
+        if (cur_gen != meta->buf_gen)
+            return RSS_EOVERFLOW;
+    }
+
+    /* For embedded: check that the slot wasn't recycled */
+    uint32_t slot_count = hdr->slot_count;
+    uint32_t idx = (uint32_t)((meta->seq - 1) % slot_count);
+    uint64_t slot_seq = atomic_load_explicit((_Atomic uint64_t *)&ring->slots[idx].seq,
+                                              memory_order_acquire);
+    if (slot_seq != meta->seq)
+        return RSS_EOVERFLOW;
+
+    return 0;
+}
+
 int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
 {
     if (!ring)

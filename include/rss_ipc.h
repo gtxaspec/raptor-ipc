@@ -137,6 +137,28 @@ void rss_ring_close(rss_ring_t *ring);
 int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t dest_size,
                   uint32_t *length, rss_ring_slot_t *meta);
 
+/*
+ * rss_ring_peek -- zero-copy read: returns a pointer to frame data in
+ * the ring's backing memory (rmem for refmode, data region for embedded).
+ *
+ * The returned pointer is valid until rss_ring_peek_done() is called.
+ * The caller MUST call rss_ring_peek_done() after it finishes using
+ * the data — this re-validates that the producer didn't overwrite
+ * the buffer and advances the read sequence.
+ *
+ * Returns 0 on success, RSS_EOVERFLOW, -EAGAIN (same as rss_ring_read).
+ */
+int rss_ring_peek(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data_ptr,
+                  uint32_t *length, rss_ring_slot_t *meta);
+
+/*
+ * rss_ring_peek_done -- validate and release a peek'd frame.
+ *
+ * Returns 0 if the data was valid throughout the peek, RSS_EOVERFLOW
+ * if the producer overwrote the buffer (data sent may be corrupt).
+ */
+int rss_ring_peek_done(rss_ring_t *ring, const rss_ring_slot_t *meta);
+
 int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms);
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring);
 uint32_t rss_ring_max_frame_size(rss_ring_t *ring);
