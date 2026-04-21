@@ -12,6 +12,7 @@
 #ifndef RSS_IPC_H
 #define RSS_IPC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdatomic.h>
 
