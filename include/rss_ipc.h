@@ -163,6 +163,21 @@ int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms);
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring);
 uint32_t rss_ring_max_frame_size(rss_ring_t *ring);
 
+/*
+ * rss_ring_version_ok -- check if an opened ring's version is compatible.
+ *
+ * Returns true if the ring version matches RSS_RING_VERSION compiled into
+ * the caller. Returns false and sets *ring_ver to the actual version if
+ * there is a mismatch (ring_ver may be NULL if not needed).
+ */
+static inline bool rss_ring_version_ok(rss_ring_t *ring, uint32_t *ring_ver)
+{
+    const rss_ring_header_t *h = rss_ring_get_header(ring);
+    if (!h) return false;
+    if (ring_ver) *ring_ver = h->version;
+    return h->version == RSS_RING_VERSION;
+}
+
 /* Consumer → producer IDR request via atomic flag in ring header.
  * Consumer calls request_idr after EOVERFLOW to get a keyframe fast.
  * Producer calls check_idr in its encode loop and clears the flag. */
