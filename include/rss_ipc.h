@@ -14,6 +14,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdatomic.h>
 
 #ifdef __cplusplus
@@ -177,6 +178,21 @@ static inline bool rss_ring_version_ok(rss_ring_t *ring, uint32_t *ring_ver)
     if (!h) return false;
     if (ring_ver) *ring_ver = h->version;
     return h->version == RSS_RING_VERSION;
+}
+
+/*
+ * rss_ring_check_version -- check version and warn on mismatch.
+ *
+ * Convenience wrapper: logs a warning if the ring's version does not
+ * match the caller's compiled RSS_RING_VERSION. Returns true if OK.
+ */
+static inline bool rss_ring_check_version(rss_ring_t *ring, const char *name)
+{
+    uint32_t rv = 0;
+    if (rss_ring_version_ok(ring, &rv))
+        return true;
+    fprintf(stderr, "%s ring version mismatch: %u vs %u\n", name, rv, RSS_RING_VERSION);
+    return false;
 }
 
 /* Consumer → producer IDR request via atomic flag in ring header.
