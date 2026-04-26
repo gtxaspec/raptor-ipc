@@ -400,26 +400,34 @@ rss_ring_t *rss_ring_open(const char *name)
 
     /* O_RDWR needed for consumer IDR request (atomic write to header) */
     ring->shm_fd = shm_open(shm_name, O_RDWR, 0);
-    if (ring->shm_fd < 0)
+    if (ring->shm_fd < 0) {
+        // fprintf(stderr, "[ring_open] %s: shm_open(%s) failed: %s\n", name, shm_name, strerror(errno));
         goto fail;
+    }
 
     /* Stat to get the total size. */
     struct stat st;
-    if (fstat(ring->shm_fd, &st) < 0)
+    if (fstat(ring->shm_fd, &st) < 0) {
+        // fprintf(stderr, "[ring_open] %s: fstat failed: %s\n", name, strerror(errno));
         goto fail;
+    }
 
     ring->total_size = (size_t)st.st_size;
 
     /* PROT_WRITE needed for IDR request flag (atomic store to header) */
     void *base = mmap(NULL, ring->total_size, PROT_READ | PROT_WRITE, MAP_SHARED, ring->shm_fd, 0);
-    if (base == MAP_FAILED)
+    if (base == MAP_FAILED) {
+        // fprintf(stderr, "[ring_open] %s: mmap(%zu) failed: %s\n", name, ring->total_size, strerror(errno));
         goto fail;
+    }
 
     /* Peek at the header — acquire-load magic to ensure all header
      * fields are visible (pairs with producer's release store). */
     rss_ring_header_t *hdr = (rss_ring_header_t *)base;
     uint32_t m = atomic_load_explicit(&hdr->magic, memory_order_acquire);
     if (m != RSS_RING_MAGIC || hdr->version != RSS_RING_VERSION) {
+        // fprintf(stderr, "[ring_open] %s: magic/version mismatch: magic=0x%08x (expect 0x%08x) version=%u (expect %u)\n",
+        //         name, m, RSS_RING_MAGIC, hdr->version, RSS_RING_VERSION);
         munmap(base, ring->total_size);
         goto fail;
     }
@@ -429,6 +437,8 @@ rss_ring_t *rss_ring_open(const char *name)
     uint32_t ds = hdr->data_size;
     if (sc == 0 || sc > RSS_RING_MAX_SLOTS || (sc & (sc - 1)) != 0 || ds == 0 ||
         ring_total_size(sc, ds) > ring->total_size) {
+        // fprintf(stderr, "[ring_open] %s: validation failed: slots=%u data=%u total=%zu (file=%zu)\n",
+        //         name, sc, ds, ring_total_size(sc, ds), ring->total_size);
         munmap(base, ring->total_size);
         goto fail;
     }
