@@ -145,7 +145,10 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
     ring_set_pointers(ring, base, slot_count);
 
     /* Initialise header. Magic written LAST with release ordering
-     * so consumers see all fields initialized before magic becomes valid. */
+     * so consumers see all fields initialized before magic becomes valid.
+     * Save incarnation before memset so crash-restart detection works
+     * (producer reusing the same SHM inode increments from old value). */
+    uint32_t prev_inc = atomic_load_explicit(&ring->header->incarnation, memory_order_relaxed);
     memset(ring->header, 0, PAGE_SIZE);
     atomic_store_explicit(&ring->header->write_seq, 0, memory_order_relaxed);
     atomic_store_explicit(&ring->header->futex_seq, 0, memory_order_relaxed);
@@ -153,10 +156,7 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
     ring->header->data_size = data_size;
     atomic_store_explicit(&ring->header->data_head, 0, memory_order_relaxed);
     ring->header->version = RSS_RING_VERSION;
-    atomic_store_explicit(&ring->header->incarnation,
-                          atomic_load_explicit(&ring->header->incarnation, memory_order_relaxed) +
-                              1,
-                          memory_order_relaxed);
+    atomic_store_explicit(&ring->header->incarnation, prev_inc + 1, memory_order_relaxed);
 
     /* Initialise all slot sequences to 0 (no valid data). */
     for (uint32_t i = 0; i < slot_count; i++)
