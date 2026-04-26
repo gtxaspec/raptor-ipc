@@ -46,7 +46,7 @@ typedef struct {
     uint32_t buf_size;      /* single buffer size = stride * height */
     _Atomic int active_buf; /* 0 or 1: which buffer consumer reads */
     _Atomic int dirty;      /* 1 = active_buf has new data */
-    uint32_t magic;
+    _Atomic uint32_t magic; /* written last with release ordering */
     uint32_t version;
     uint32_t _reserved;
 } rss_osd_header_t;
@@ -132,9 +132,12 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height)
     shm->header->buf_size = buf_size;
     atomic_store_explicit(&shm->header->active_buf, 0, memory_order_relaxed);
     atomic_store_explicit(&shm->header->dirty, 0, memory_order_relaxed);
-    shm->header->magic = RSS_OSD_MAGIC;
     shm->header->version = RSS_OSD_VERSION;
     shm->header->_reserved = 0;
+
+    /* Write magic LAST with release — consumer acquire-loads it to
+     * ensure all header fields are visible (same pattern as ring). */
+    atomic_store_explicit(&shm->header->magic, RSS_OSD_MAGIC, memory_order_release);
 
     /* Clear both buffers. */
     memset(shm->buf[0], 0, buf_size);
@@ -253,7 +256,8 @@ rss_osd_shm_t *rss_osd_open(const char *name)
         goto fail;
 
     rss_osd_header_t *hdr = (rss_osd_header_t *)base;
-    if (hdr->magic != RSS_OSD_MAGIC || hdr->version != RSS_OSD_VERSION) {
+    uint32_t m = atomic_load_explicit(&hdr->magic, memory_order_acquire);
+    if (m != RSS_OSD_MAGIC || hdr->version != RSS_OSD_VERSION) {
         munmap(base, shm->total_size);
         goto fail;
     }
