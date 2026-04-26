@@ -716,31 +716,39 @@ void rss_ring_acquire(rss_ring_t *ring)
 {
     if (!ring || !ring->header)
         return;
-    atomic_fetch_add_explicit(&ring->header->reader_count, 1, memory_order_relaxed);
 
-    /* Register PID for crash detection */
+    /* Register PID first — only bump reader_count if we got a slot.
+     * Without a slot, reap_dead_readers can't track us and would
+     * reset reader_count, causing underflow on our later release. */
     uint32_t pid = (uint32_t)getpid();
+    bool registered = false;
     for (int i = 0; i < RSS_RING_MAX_READERS; i++) {
         uint32_t expected = 0;
         if (atomic_compare_exchange_strong_explicit(&ring->header->reader_pids[i], &expected, pid,
-                                                    memory_order_relaxed, memory_order_relaxed))
+                                                    memory_order_relaxed, memory_order_relaxed)) {
+            registered = true;
             break;
+        }
     }
+    if (registered)
+        atomic_fetch_add_explicit(&ring->header->reader_count, 1, memory_order_relaxed);
 }
 
 void rss_ring_release(rss_ring_t *ring)
 {
     if (!ring || !ring->header)
         return;
-    atomic_fetch_sub_explicit(&ring->header->reader_count, 1, memory_order_release);
 
-    /* Unregister PID */
+    /* Unregister PID — only decrement reader_count if we were registered.
+     * Symmetric with acquire: no slot → no count bump → no count sub. */
     uint32_t pid = (uint32_t)getpid();
     for (int i = 0; i < RSS_RING_MAX_READERS; i++) {
         uint32_t expected = pid;
         if (atomic_compare_exchange_strong_explicit(&ring->header->reader_pids[i], &expected, 0,
-                                                    memory_order_relaxed, memory_order_relaxed))
+                                                    memory_order_relaxed, memory_order_relaxed)) {
+            atomic_fetch_sub_explicit(&ring->header->reader_count, 1, memory_order_release);
             break;
+        }
     }
 }
 
