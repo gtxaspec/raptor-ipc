@@ -127,11 +127,11 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
 
     ring->total_size = ring_total_size(slot_count, data_size);
 
-    /* 0666: all daemons run as root on a single-user embedded camera.
-     * If root is compromised the entire system is accessible regardless
-     * of SHM permissions. Restricting perms would break the multi-process
-     * producer/consumer architecture without providing real security. */
-    ring->shm_fd = shm_open(shm_name, O_CREAT | O_RDWR | O_TRUNC, 0666);
+    /* Unlink first (stale SHM from crashed producer), then O_EXCL to
+     * prevent a second producer from silently truncating an active ring.
+     * 0666: all daemons run as root on a single-user embedded camera. */
+    shm_unlink(shm_name);
+    ring->shm_fd = shm_open(shm_name, O_CREAT | O_RDWR | O_EXCL, 0666);
     if (ring->shm_fd < 0)
         goto fail;
 
