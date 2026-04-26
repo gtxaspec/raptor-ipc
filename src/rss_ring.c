@@ -186,8 +186,13 @@ void rss_ring_destroy(rss_ring_t *ring)
     if (!ring)
         return;
 
-    if (ring->header && ring->header != MAP_FAILED)
+    /* Wake blocked consumers before unmapping so they don't wait
+     * out the full timeout on a destroyed ring. */
+    if (ring->header && ring->header != MAP_FAILED) {
+        atomic_fetch_add_explicit(&ring->header->futex_seq, 1, memory_order_release);
+        futex_wake((uint32_t *)&ring->header->futex_seq, INT_MAX);
         munmap(ring->header, ring->total_size);
+    }
 
     if (ring->shm_fd >= 0) {
         char shm_name[128];
