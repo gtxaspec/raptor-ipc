@@ -419,7 +419,16 @@ rss_ring_t *rss_ring_open(const char *name)
         goto fail;
     }
 
-    ring_set_pointers(ring, base, hdr->slot_count);
+    /* Validate header fields before using them in pointer arithmetic */
+    uint32_t sc = hdr->slot_count;
+    uint32_t ds = hdr->data_size;
+    if (sc == 0 || sc > RSS_RING_MAX_SLOTS || (sc & (sc - 1)) != 0 || ds == 0 ||
+        ring_total_size(sc, ds) > ring->total_size) {
+        munmap(base, ring->total_size);
+        goto fail;
+    }
+
+    ring_set_pointers(ring, base, sc);
     ring->open_incarnation = atomic_load_explicit(&hdr->incarnation, memory_order_relaxed);
 
     /* Reference mode: frame data in external shared memory.
