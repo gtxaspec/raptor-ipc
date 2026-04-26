@@ -158,9 +158,11 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
     ring->header->version = RSS_RING_VERSION;
     atomic_store_explicit(&ring->header->incarnation, prev_inc + 1, memory_order_relaxed);
 
-    /* Initialise all slot sequences to 0 (no valid data). */
+    /* Initialise all slot sequences to UINT64_MAX (sentinel — never matches
+     * a valid read_seq). Prevents phantom reads when a fresh consumer starts
+     * at read_seq=0: validation fails, EOVERFLOW syncs to latest write_seq. */
     for (uint32_t i = 0; i < slot_count; i++)
-        atomic_store_explicit(&ring->slots[i].seq, 0, memory_order_relaxed);
+        atomic_store_explicit(&ring->slots[i].seq, UINT64_MAX, memory_order_relaxed);
 
     /* Write magic last — release fence ensures all above writes are
      * visible to consumers before they see valid magic. */
@@ -253,12 +255,9 @@ int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_co
     rss_ring_slot_t *slot = &ring->slots[slot_idx];
 
     /* Invalidate the slot BEFORE overwriting data. A consumer that reads
-     * this slot during the memcpy will see seq=0, fail its validation
-     * check, and retry. Without this sentinel, a consumer could pass
-     * re-validation against the stale seq if the producer wraps the
-     * entire ring during the copy (physically impossible at real frame
-     * rates, but closing the gap is cheap). */
-    atomic_store_explicit(&slot->seq, 0, memory_order_relaxed);
+     * this slot during the memcpy will see UINT64_MAX, fail its validation
+     * check, and retry. */
+    atomic_store_explicit(&slot->seq, UINT64_MAX, memory_order_relaxed);
 
     slot->data_offset = offset;
     slot->data_length = length;
@@ -337,7 +336,7 @@ int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length
     uint32_t gen = atomic_fetch_add_explicit(&hdr->ref_buf_gen[buf_idx], 1,
                                              memory_order_release) + 1;
 
-    atomic_store_explicit(&slot->seq, 0, memory_order_relaxed);
+    atomic_store_explicit(&slot->seq, UINT64_MAX, memory_order_relaxed);
 
     slot->data_offset = rmem_offset;
     slot->data_length = length;
