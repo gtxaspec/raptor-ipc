@@ -258,6 +258,16 @@ rss_osd_shm_t *rss_osd_open(const char *name)
         goto fail;
     }
 
+    /* Validate header fields before pointer arithmetic */
+    if (hdr->width == 0 || hdr->height == 0 ||
+        hdr->width > 8192 || hdr->height > 8192 ||
+        hdr->stride != hdr->width * 4 ||
+        hdr->buf_size != hdr->stride * hdr->height ||
+        osd_total_size(hdr->buf_size) > shm->total_size) {
+        munmap(base, shm->total_size);
+        goto fail;
+    }
+
     osd_set_pointers(shm, base, hdr->buf_size);
 
     /* Consumer notification is via the atomic dirty flag in SHM
