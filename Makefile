@@ -1,6 +1,6 @@
 CC      ?= gcc
 AR      ?= ar
-CFLAGS  := -Wall -Wextra -std=c11 -D_GNU_SOURCE -Os -fPIC
+CFLAGS  := -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -Os -fPIC
 CFLAGS  += -ffunction-sections -fdata-sections
 CFLAGS  += -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident
 CFLAGS  += -Iinclude
