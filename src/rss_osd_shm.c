@@ -151,6 +151,8 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height)
     return shm;
 
 fail:
+    if (shm->header && shm->header != MAP_FAILED)
+        munmap(shm->header, shm->total_size);
     if (shm->shm_fd >= 0) {
         shm_unlink(shm_name);
         close(shm->shm_fd);
