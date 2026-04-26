@@ -414,7 +414,7 @@ rss_ring_t *rss_ring_open(const char *name)
      * fields are visible (pairs with producer's release store). */
     rss_ring_header_t *hdr = (rss_ring_header_t *)base;
     uint32_t m = atomic_load_explicit(&hdr->magic, memory_order_acquire);
-    if (m != RSS_RING_MAGIC || hdr->version < 2 || hdr->version > RSS_RING_VERSION) {
+    if (m != RSS_RING_MAGIC || hdr->version != RSS_RING_VERSION) {
         munmap(base, ring->total_size);
         goto fail;
     }
