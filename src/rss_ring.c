@@ -127,11 +127,12 @@ rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data
 
     ring->total_size = ring_total_size(slot_count, data_size);
 
-    /* Unlink first (stale SHM from crashed producer), then O_EXCL to
-     * prevent a second producer from silently truncating an active ring.
+    /* Reuse existing SHM inode so consumer mmaps that opened the same
+     * name see the new header via the shared page cache. No O_TRUNC
+     * (SIGBUS risk on consumers reading during truncate) and no O_EXCL
+     * + shm_unlink (new inode orphans existing consumer mmaps).
      * 0666: all daemons run as root on a single-user embedded camera. */
-    shm_unlink(shm_name);
-    ring->shm_fd = shm_open(shm_name, O_CREAT | O_RDWR | O_EXCL, 0666);
+    ring->shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
     if (ring->shm_fd < 0)
         goto fail;
 
