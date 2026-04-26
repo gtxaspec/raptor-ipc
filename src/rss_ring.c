@@ -676,9 +676,13 @@ int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
     struct timespec ts = {.tv_sec = timeout_ms / 1000, .tv_nsec = (timeout_ms % 1000) * 1000000L};
 
     int ret = futex_wait((uint32_t *)&hdr->futex_seq, expected, &ts);
-    if (ret < 0 && errno == ETIMEDOUT)
-        return -ETIMEDOUT;
-    /* EAGAIN means value already changed — new data available. */
+    if (ret < 0) {
+        if (errno == ETIMEDOUT)
+            return -ETIMEDOUT;
+        if (errno == EFAULT || errno == EINVAL)
+            return -errno;
+        /* EAGAIN (value changed) and EINTR (signal) are both "check now" */
+    }
     return 0;
 }
 
