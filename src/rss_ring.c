@@ -646,7 +646,7 @@ int rss_ring_peek_done(rss_ring_t *ring, const rss_ring_slot_t *meta)
 
     /* For embedded: check that the slot wasn't recycled */
     uint32_t slot_count = hdr->slot_count;
-    uint32_t idx = (uint32_t)((meta->seq - 1) % slot_count);
+    uint32_t idx = (uint32_t)(meta->seq % slot_count);
     uint64_t slot_seq = atomic_load_explicit((_Atomic uint64_t *)&ring->slots[idx].seq,
                                               memory_order_acquire);
     if (slot_seq != meta->seq)
