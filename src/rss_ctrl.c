@@ -177,8 +177,10 @@ rss_ctrl_t *rss_ctrl_listen(const char *sock_path)
     unlink(sock_path);
 
     ctrl->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (ctrl->listen_fd < 0)
+    if (ctrl->listen_fd < 0) {
+        RSS_IPC_ERROR("ctrl_listen %s: socket: %s", sock_path, strerror(errno));
         goto fail;
+    }
 
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
@@ -191,11 +193,15 @@ rss_ctrl_t *rss_ctrl_listen(const char *sock_path)
     mode_t old_umask = umask(0);
     int bind_ret = bind(ctrl->listen_fd, (struct sockaddr *)&addr, sizeof(addr));
     umask(old_umask);
-    if (bind_ret < 0)
+    if (bind_ret < 0) {
+        RSS_IPC_ERROR("ctrl_listen %s: bind: %s", sock_path, strerror(errno));
         goto fail;
+    }
 
-    if (listen(ctrl->listen_fd, RSS_CTRL_BACKLOG) < 0)
+    if (listen(ctrl->listen_fd, RSS_CTRL_BACKLOG) < 0) {
+        RSS_IPC_ERROR("ctrl_listen %s: listen: %s", sock_path, strerror(errno));
         goto fail;
+    }
 
     return ctrl;
 

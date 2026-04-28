@@ -72,8 +72,8 @@ struct rss_ring {
     int shm_fd;
     bool is_producer;
     char name[64];
-    uint8_t *ref_data;         /* consumer: /dev/rmem mmap (NULL if embedded) */
-    int ref_fd;                /* consumer: /dev/rmem fd (-1 if not open)     */
+    uint8_t *ref_data; /* consumer: /dev/rmem mmap (NULL if embedded) */
+    int ref_fd;        /* consumer: /dev/rmem fd (-1 if not open)     */
 };
 
 /*
@@ -294,7 +294,7 @@ int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int
 }
 
 int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint32_t rmem_offset,
-                           uint8_t buf_count, uint32_t buf_stride)
+                            uint8_t buf_count, uint32_t buf_stride)
 {
     if (!ring || !ring->is_producer)
         return -EINVAL;
@@ -319,8 +319,8 @@ int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint32_t rmem_
     return 0;
 }
 
-int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length,
-                         int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint8_t buf_idx)
+int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length, int64_t timestamp,
+                         uint16_t nal_type, uint8_t is_key, uint8_t buf_idx)
 {
     if (!ring || !ring->is_producer || length == 0)
         return -EINVAL;
@@ -339,8 +339,8 @@ int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length
 
     /* Bump generation for this buffer — invalidates any in-progress consumer
      * reads of older frames in the same encoder buffer. */
-    uint32_t gen = atomic_fetch_add_explicit(&hdr->ref_buf_gen[buf_idx], 1,
-                                             memory_order_release) + 1;
+    uint32_t gen =
+        atomic_fetch_add_explicit(&hdr->ref_buf_gen[buf_idx], 1, memory_order_release) + 1;
 
     atomic_store_explicit(&slot->seq, UINT64_MAX, memory_order_relaxed);
 
@@ -401,14 +401,14 @@ rss_ring_t *rss_ring_open(const char *name)
     /* O_RDWR needed for consumer IDR request (atomic write to header) */
     ring->shm_fd = shm_open(shm_name, O_RDWR, 0);
     if (ring->shm_fd < 0) {
-        // fprintf(stderr, "[ring_open] %s: shm_open(%s) failed: %s\n", name, shm_name, strerror(errno));
+        RSS_IPC_DEBUG("ring_open %s: shm_open(%s): %s", name, shm_name, strerror(errno));
         goto fail;
     }
 
     /* Stat to get the total size. */
     struct stat st;
     if (fstat(ring->shm_fd, &st) < 0) {
-        // fprintf(stderr, "[ring_open] %s: fstat failed: %s\n", name, strerror(errno));
+        RSS_IPC_ERROR("ring_open %s: fstat: %s", name, strerror(errno));
         goto fail;
     }
 
@@ -417,7 +417,7 @@ rss_ring_t *rss_ring_open(const char *name)
     /* PROT_WRITE needed for IDR request flag (atomic store to header) */
     void *base = mmap(NULL, ring->total_size, PROT_READ | PROT_WRITE, MAP_SHARED, ring->shm_fd, 0);
     if (base == MAP_FAILED) {
-        // fprintf(stderr, "[ring_open] %s: mmap(%zu) failed: %s\n", name, ring->total_size, strerror(errno));
+        RSS_IPC_ERROR("ring_open %s: mmap(%zu): %s", name, ring->total_size, strerror(errno));
         goto fail;
     }
 
@@ -426,8 +426,9 @@ rss_ring_t *rss_ring_open(const char *name)
     rss_ring_header_t *hdr = (rss_ring_header_t *)base;
     uint32_t m = atomic_load_explicit(&hdr->magic, memory_order_acquire);
     if (m != RSS_RING_MAGIC || hdr->version != RSS_RING_VERSION) {
-        // fprintf(stderr, "[ring_open] %s: magic/version mismatch: magic=0x%08x (expect 0x%08x) version=%u (expect %u)\n",
-        //         name, m, RSS_RING_MAGIC, hdr->version, RSS_RING_VERSION);
+        RSS_IPC_WARN("ring_open %s: magic/version mismatch: magic=0x%08x (expect 0x%08x) "
+                     "version=%u (expect %u)",
+                     name, m, RSS_RING_MAGIC, hdr->version, RSS_RING_VERSION);
         munmap(base, ring->total_size);
         goto fail;
     }
@@ -437,8 +438,8 @@ rss_ring_t *rss_ring_open(const char *name)
     uint32_t ds = hdr->data_size;
     if (sc == 0 || sc > RSS_RING_MAX_SLOTS || (sc & (sc - 1)) != 0 || ds == 0 ||
         ring_total_size(sc, ds) > ring->total_size) {
-        // fprintf(stderr, "[ring_open] %s: validation failed: slots=%u data=%u total=%zu (file=%zu)\n",
-        //         name, sc, ds, ring_total_size(sc, ds), ring->total_size);
+        RSS_IPC_WARN("ring_open %s: validation failed: slots=%u data=%u total=%zu (file=%zu)", name,
+                     sc, ds, ring_total_size(sc, ds), ring->total_size);
         munmap(base, ring->total_size);
         goto fail;
     }
@@ -456,15 +457,15 @@ rss_ring_t *rss_ring_open(const char *name)
         if (ring->ref_fd < 0) {
             ring->ref_fd = open("/dev/rmem", O_RDONLY);
             if (ring->ref_fd >= 0)
-                ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED,
-                                      ring->ref_fd, (off_t)hdr->ref_rmem_offset);
+                ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED, ring->ref_fd,
+                                      (off_t)hdr->ref_rmem_offset);
         } else {
-            ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED,
-                                  ring->ref_fd, 0);
+            ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED, ring->ref_fd, 0);
         }
         if (!ring->ref_data || ring->ref_data == MAP_FAILED) {
             ring->ref_data = NULL;
-            if (ring->ref_fd >= 0) close(ring->ref_fd);
+            if (ring->ref_fd >= 0)
+                close(ring->ref_fd);
             ring->ref_fd = -1;
             munmap(base, ring->total_size);
             goto fail;
@@ -556,9 +557,7 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
         return RSS_EOVERFLOW;
     }
 
-    const uint8_t *src = ring->ref_data
-        ? ring->ref_data + data_offset
-        : ring->data + data_offset;
+    const uint8_t *src = ring->ref_data ? ring->ref_data + data_offset : ring->data + data_offset;
     memcpy(dest, src, data_length);
 
     if (meta)
@@ -598,8 +597,8 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
     return 0;
 }
 
-int rss_ring_peek(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data_ptr,
-                  uint32_t *length, rss_ring_slot_t *meta)
+int rss_ring_peek(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data_ptr, uint32_t *length,
+                  rss_ring_slot_t *meta)
 {
     if (!ring || !read_seq || !data_ptr || !length)
         return -EINVAL;
@@ -639,9 +638,7 @@ int rss_ring_peek(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data_ptr
         return RSS_EOVERFLOW;
     }
 
-    *data_ptr = ring->ref_data
-        ? ring->ref_data + data_offset
-        : ring->data + data_offset;
+    *data_ptr = ring->ref_data ? ring->ref_data + data_offset : ring->data + data_offset;
     *length = data_length;
 
     if (meta)
@@ -671,8 +668,8 @@ int rss_ring_peek_done(rss_ring_t *ring, const rss_ring_slot_t *meta)
     /* For embedded: check that the slot wasn't recycled */
     uint32_t slot_count = hdr->slot_count;
     uint32_t idx = (uint32_t)(meta->seq % slot_count);
-    uint64_t slot_seq = atomic_load_explicit((_Atomic uint64_t *)&ring->slots[idx].seq,
-                                              memory_order_acquire);
+    uint64_t slot_seq =
+        atomic_load_explicit((_Atomic uint64_t *)&ring->slots[idx].seq, memory_order_acquire);
     if (slot_seq != meta->seq)
         return RSS_EOVERFLOW;
 

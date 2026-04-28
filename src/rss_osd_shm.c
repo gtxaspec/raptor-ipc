@@ -112,15 +112,21 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height)
 
     /* 0666: single-user embedded camera; see rss_ring.c for rationale. */
     shm->shm_fd = shm_open(shm_name, O_CREAT | O_RDWR | O_TRUNC, 0666);
-    if (shm->shm_fd < 0)
+    if (shm->shm_fd < 0) {
+        RSS_IPC_ERROR("osd_create %s: shm_open: %s", name, strerror(errno));
         goto fail;
+    }
 
-    if (ftruncate(shm->shm_fd, (off_t)shm->total_size) < 0)
+    if (ftruncate(shm->shm_fd, (off_t)shm->total_size) < 0) {
+        RSS_IPC_ERROR("osd_create %s: ftruncate: %s", name, strerror(errno));
         goto fail;
+    }
 
     void *base = mmap(NULL, shm->total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm->shm_fd, 0);
-    if (base == MAP_FAILED)
+    if (base == MAP_FAILED) {
+        RSS_IPC_ERROR("osd_create %s: mmap: %s", name, strerror(errno));
         goto fail;
+    }
 
     osd_set_pointers(shm, base, buf_size);
 
@@ -145,8 +151,10 @@ rss_osd_shm_t *rss_osd_create(const char *name, uint32_t width, uint32_t height)
 
     /* Create eventfd for consumer notification. */
     shm->event_fd = eventfd(0, EFD_NONBLOCK);
-    if (shm->event_fd < 0)
+    if (shm->event_fd < 0) {
+        RSS_IPC_ERROR("osd_create %s: eventfd: %s", name, strerror(errno));
         goto fail;
+    }
 
     return shm;
 
@@ -243,33 +251,39 @@ rss_osd_shm_t *rss_osd_open(const char *name)
     make_shm_name(shm_name, sizeof(shm_name), name);
 
     shm->shm_fd = shm_open(shm_name, O_RDWR, 0);
-    if (shm->shm_fd < 0)
+    if (shm->shm_fd < 0) {
+        RSS_IPC_DEBUG("osd_open %s: shm_open: %s", name, strerror(errno));
         goto fail;
+    }
 
     struct stat st;
-    if (fstat(shm->shm_fd, &st) < 0)
+    if (fstat(shm->shm_fd, &st) < 0) {
+        RSS_IPC_ERROR("osd_open %s: fstat: %s", name, strerror(errno));
         goto fail;
+    }
 
     shm->total_size = (size_t)st.st_size;
 
     /* Consumer needs PROT_WRITE for clear_dirty (atomic_store on dirty flag) */
     void *base = mmap(NULL, shm->total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm->shm_fd, 0);
-    if (base == MAP_FAILED)
+    if (base == MAP_FAILED) {
+        RSS_IPC_ERROR("osd_open %s: mmap: %s", name, strerror(errno));
         goto fail;
+    }
 
     rss_osd_header_t *hdr = (rss_osd_header_t *)base;
     uint32_t m = atomic_load_explicit(&hdr->magic, memory_order_acquire);
     if (m != RSS_OSD_MAGIC || hdr->version != RSS_OSD_VERSION) {
+        RSS_IPC_WARN("osd_open %s: magic/version mismatch", name);
         munmap(base, shm->total_size);
         goto fail;
     }
 
     /* Validate header fields before pointer arithmetic */
-    if (hdr->width == 0 || hdr->height == 0 ||
-        hdr->width > 8192 || hdr->height > 8192 ||
-        hdr->stride != hdr->width * 4 ||
-        hdr->buf_size != hdr->stride * hdr->height ||
+    if (hdr->width == 0 || hdr->height == 0 || hdr->width > 8192 || hdr->height > 8192 ||
+        hdr->stride != hdr->width * 4 || hdr->buf_size != hdr->stride * hdr->height ||
         osd_total_size(hdr->buf_size) > shm->total_size) {
+        RSS_IPC_WARN("osd_open %s: header validation failed", name);
         munmap(base, shm->total_size);
         goto fail;
     }
