@@ -455,14 +455,19 @@ rss_ring_t *rss_ring_open(const char *name)
         snprintf(enc_shm, sizeof(enc_shm), "/rss_enc_%s", ring->name);
         ring->ref_fd = shm_open(enc_shm, O_RDONLY, 0);
         if (ring->ref_fd < 0) {
+            RSS_IPC_DEBUG("ring_open %s: shm_open(%s) failed, trying /dev/rmem", name, enc_shm);
             ring->ref_fd = open("/dev/rmem", O_RDONLY);
             if (ring->ref_fd >= 0)
                 ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED, ring->ref_fd,
                                       (off_t)hdr->ref_rmem_offset);
+            else
+                RSS_IPC_WARN("ring_open %s: refmode: no shm and no /dev/rmem", name);
         } else {
             ring->ref_data = mmap(NULL, hdr->ref_rmem_size, PROT_READ, MAP_SHARED, ring->ref_fd, 0);
         }
         if (!ring->ref_data || ring->ref_data == MAP_FAILED) {
+            RSS_IPC_WARN("ring_open %s: refmode mmap failed: size=%u offset=%u: %s", name,
+                         hdr->ref_rmem_size, hdr->ref_rmem_offset, strerror(errno));
             ring->ref_data = NULL;
             if (ring->ref_fd >= 0)
                 close(ring->ref_fd);
