@@ -485,6 +485,64 @@ TEST ring_multi_consumer(void)
 	PASS();
 }
 
+TEST ring_version_mismatch_open(void)
+{
+	rss_ring_t *p = rss_ring_create("t_vm", 8, 65536);
+	ASSERT(p);
+
+	rss_ring_header_t *hdr = (rss_ring_header_t *)rss_ring_get_header(p);
+	ASSERT(hdr);
+	hdr->version = RSS_RING_VERSION + 1;
+
+	rss_ring_t *c = rss_ring_open("t_vm");
+	ASSERT_EQ(NULL, c);
+
+	hdr->version = RSS_RING_VERSION;
+	rss_ring_destroy(p);
+	PASS();
+}
+
+TEST ring_magic_mismatch_open(void)
+{
+	rss_ring_t *p = rss_ring_create("t_mm", 8, 65536);
+	ASSERT(p);
+
+	rss_ring_header_t *hdr = (rss_ring_header_t *)rss_ring_get_header(p);
+	ASSERT(hdr);
+	atomic_store(&hdr->magic, 0xDEADBEEF);
+
+	rss_ring_t *c = rss_ring_open("t_mm");
+	ASSERT_EQ(NULL, c);
+
+	atomic_store(&hdr->magic, RSS_RING_MAGIC);
+	rss_ring_destroy(p);
+	PASS();
+}
+
+TEST ring_version_check_helpers(void)
+{
+	rss_ring_t *p = rss_ring_create("t_vch", 8, 65536);
+	ASSERT(p);
+
+	uint32_t ver = 0;
+	ASSERT(rss_ring_version_ok(p, &ver));
+	ASSERT_EQ(RSS_RING_VERSION, ver);
+	ASSERT(rss_ring_check_version(p, "t_vch"));
+
+	rss_ring_header_t *hdr = (rss_ring_header_t *)rss_ring_get_header(p);
+	hdr->version = 999;
+
+	ver = 0;
+	ASSERT_FALSE(rss_ring_version_ok(p, &ver));
+	ASSERT_EQ(999u, ver);
+	ASSERT_FALSE(rss_ring_check_version(p, "t_vch"));
+	ASSERT_FALSE(rss_ring_version_ok(p, NULL));
+
+	hdr->version = RSS_RING_VERSION;
+	rss_ring_destroy(p);
+	PASS();
+}
+
 SUITE(ring_suite)
 {
 	RUN_TEST(ring_create_open);
@@ -504,4 +562,7 @@ SUITE(ring_suite)
 	RUN_TEST(ring_wait_timeout);
 	RUN_TEST(ring_data_wrap);
 	RUN_TEST(ring_multi_consumer);
+	RUN_TEST(ring_version_mismatch_open);
+	RUN_TEST(ring_magic_mismatch_open);
+	RUN_TEST(ring_version_check_helpers);
 }
