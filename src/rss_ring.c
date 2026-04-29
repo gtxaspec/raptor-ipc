@@ -401,7 +401,7 @@ rss_ring_t *rss_ring_open(const char *name)
     /* O_RDWR needed for consumer IDR request (atomic write to header) */
     ring->shm_fd = shm_open(shm_name, O_RDWR, 0);
     if (ring->shm_fd < 0) {
-        RSS_IPC_DEBUG("ring_open %s: shm_open(%s): %s", name, shm_name, strerror(errno));
+        RSS_IPC_TRACE("ring_open %s: shm_open(%s): %s", name, shm_name, strerror(errno));
         goto fail;
     }
 

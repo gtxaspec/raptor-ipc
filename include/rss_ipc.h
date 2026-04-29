@@ -28,6 +28,7 @@ extern "C" {
 #define RSS_IPC_LOG_WARN 2
 #define RSS_IPC_LOG_INFO 3
 #define RSS_IPC_LOG_DEBUG 4
+#define RSS_IPC_LOG_TRACE 5
 
 typedef void (*rss_ipc_log_fn)(int level, const char *file, int line, const char *fmt, ...)
     __attribute__((format(printf, 4, 5)));
@@ -42,6 +43,8 @@ void rss_ipc_log(int level, const char *file, int line, const char *fmt, ...)
 #define RSS_IPC_INFO(fmt, ...) rss_ipc_log(RSS_IPC_LOG_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 #define RSS_IPC_DEBUG(fmt, ...)                                                                    \
     rss_ipc_log(RSS_IPC_LOG_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define RSS_IPC_TRACE(fmt, ...)                                                                    \
+    rss_ipc_log(RSS_IPC_LOG_TRACE, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 
 /* ------------------------------------------------------------------ */
 /*  SHM Ring Buffer (section 2.1)                                     */
