@@ -21,6 +21,8 @@ static const char *level_str(int level)
         return "INFO ";
     case RSS_IPC_LOG_DEBUG:
         return "DEBUG";
+    case RSS_IPC_LOG_TRACE:
+        return "TRACE";
     default:
         return "?????";
     }
@@ -28,6 +30,8 @@ static const char *level_str(int level)
 
 static void default_log(int level, const char *file, int line, const char *fmt, ...)
 {
+    if (level > RSS_IPC_LOG_DEBUG)
+        return;
     va_list ap;
     va_start(ap, fmt);
     fprintf(stderr, "[%s] %s:%d: ", level_str(level), file, line);
