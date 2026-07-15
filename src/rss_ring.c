@@ -377,6 +377,55 @@ void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t cod
     ring->header->level = level;
 }
 
+void rss_ring_set_utc(rss_ring_t *ring, int64_t offset_us, uint8_t status)
+{
+    if (!ring || !ring->is_producer)
+        return;
+
+    rss_ring_header_t *h = ring->header;
+    uint32_t gen = atomic_load_explicit(&h->utc_gen, memory_order_relaxed);
+
+    /* Linux-style seqlock write: odd marks in-progress. The release fence
+     * after the odd store keeps the data writes from moving above it; the
+     * release store of the even value keeps them from moving below. */
+    atomic_store_explicit(&h->utc_gen, gen + 1, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    h->utc_offset_us = offset_us;
+    h->utc_status = status;
+    atomic_store_explicit(&h->utc_gen, gen + 2, memory_order_release);
+}
+
+int rss_ring_get_utc(rss_ring_t *ring, int64_t *offset_us, uint8_t *status)
+{
+    if (!ring || !offset_us)
+        return -EINVAL;
+
+    const rss_ring_header_t *h = ring->header;
+
+    for (int retry = 0; retry < 8; retry++) {
+        uint32_t g1 = atomic_load_explicit(&h->utc_gen, memory_order_acquire);
+        if (g1 & 1)
+            continue;
+
+        int64_t off = h->utc_offset_us;
+        uint8_t st = h->utc_status;
+
+        atomic_thread_fence(memory_order_acquire);
+        uint32_t g2 = atomic_load_explicit(&h->utc_gen, memory_order_relaxed);
+        if (g1 != g2)
+            continue;
+
+        if (off == 0)
+            return -ENOENT;
+        *offset_us = off;
+        if (status)
+            *status = st;
+        return 0;
+    }
+
+    return -EAGAIN;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Consumer API                                                      */
 /* ------------------------------------------------------------------ */

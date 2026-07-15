@@ -51,7 +51,7 @@ void rss_ipc_log(int level, const char *file, int line, const char *fmt, ...)
 /* ------------------------------------------------------------------ */
 
 #define RSS_RING_MAGIC 0x52535352 /* "RSSR" */
-#define RSS_RING_VERSION 3
+#define RSS_RING_VERSION 4
 #define RSS_RING_MAX_SLOTS 64
 #define RSS_RING_SHM_PREFIX "/rss_ring_"
 
@@ -99,7 +99,20 @@ typedef struct __attribute__((aligned(64))) {
     uint32_t ref_rmem_offset;                            /* /dev/rmem mmap file offset */
     uint32_t ref_buf_stride;                             /* per-buffer size in bytes  */
     _Atomic uint32_t ref_buf_gen[RSS_RING_MAX_REF_BUFS]; /* per-buffer generation   */
+
+    /* v4: producer UTC mapping — UTC(frame) = slot.timestamp + utc_offset_us.
+     * Seqlock-guarded: MIPS32 has no lock-free 64-bit atomics, and a torn
+     * read across a refresh would yield a garbage timestamp. utc_offset_us
+     * of 0 means no mapping is published (producer has no wall clock). */
+    _Atomic uint32_t utc_gen; /* seqlock generation — odd while updating     */
+    uint8_t utc_status;       /* ST 0603 time status (RSS_UTC_STATUS_*)      */
+    uint8_t _pad_utc[3];
+    int64_t utc_offset_us; /* CLOCK_REALTIME − producer media clock, µs   */
 } rss_ring_header_t;
+
+/* MISB ST 0603 §7.4 Time Status byte values for utc_status */
+#define RSS_UTC_STATUS_LOCKED 0x1F   /* clock locked to absolute reference   */
+#define RSS_UTC_STATUS_UNLOCKED 0x9F /* lock unknown (not NTP-disciplined)   */
 
 _Static_assert(sizeof(rss_ring_header_t) <= 192, "ring header must fit in header page");
 
@@ -138,6 +151,15 @@ void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t cod
  * and read from it via the standard rss_ring_read API. */
 int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint32_t rmem_offset,
                             uint8_t buf_count, uint32_t buf_stride);
+
+/* Publish the producer's media-clock→UTC mapping (see utc_offset_us in the
+ * header). Producer-only. Refresh periodically so NTP steps propagate. */
+void rss_ring_set_utc(rss_ring_t *ring, int64_t offset_us, uint8_t status);
+
+/* Read the UTC mapping. Returns 0 on success, -ENOENT if the producer has
+ * not published one, -EAGAIN if a concurrent refresh persisted across the
+ * bounded retry (skip and retry next frame). */
+int rss_ring_get_utc(rss_ring_t *ring, int64_t *offset_us, uint8_t *status);
 int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length, int64_t timestamp,
                          uint16_t nal_type, uint8_t is_key, uint8_t buf_idx);
 
