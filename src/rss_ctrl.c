@@ -203,6 +203,13 @@ rss_ctrl_t *rss_ctrl_listen(const char *sock_path)
         goto fail;
     }
 
+    /* Non-blocking listener: accept() must never park a daemon. An
+     * event loop can dispatch a read handler spuriously (live555's
+     * select path falls through with stale fd_sets on EINTR), and a
+     * blocking accept() with no pending connection then sleeps
+     * forever — immune to further signals via its EINTR retry. */
+    fcntl(ctrl->listen_fd, F_SETFL, fcntl(ctrl->listen_fd, F_GETFL, 0) | O_NONBLOCK);
+
     return ctrl;
 
 fail:
