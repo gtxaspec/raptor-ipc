@@ -574,7 +574,11 @@ int rss_ring_read(rss_ring_t *ring, uint64_t *read_seq, uint8_t *dest, uint32_t 
      * store, ensuring all slot and data writes are visible. */
     uint64_t wseq = atomic_load_explicit(&hdr->write_seq, memory_order_acquire);
 
-    if (*read_seq >= wseq)
+    /* Sequences are 1-based and write_seq is release-stored after the
+     * slot is fully written, so seq == write_seq is complete and safe
+     * to read. Excluding it made every consumer run one frame behind
+     * and lose the final frame of a finite stream. */
+    if (wseq == 0 || *read_seq > wseq)
         return -EAGAIN;
 
     /* Check for overflow: consumer fell behind by >= slot_count frames. */
@@ -666,7 +670,11 @@ int rss_ring_peek(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data_ptr
     uint32_t slot_count = hdr->slot_count;
     uint64_t wseq = atomic_load_explicit(&hdr->write_seq, memory_order_acquire);
 
-    if (*read_seq >= wseq)
+    /* Sequences are 1-based and write_seq is release-stored after the
+     * slot is fully written, so seq == write_seq is complete and safe
+     * to read. Excluding it made every consumer run one frame behind
+     * and lose the final frame of a finite stream. */
+    if (wseq == 0 || *read_seq > wseq)
         return -EAGAIN;
 
     if (wseq - *read_seq >= slot_count) {
