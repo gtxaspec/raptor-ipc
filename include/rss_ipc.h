@@ -209,6 +209,11 @@ int rss_ring_peek(rss_ring_t *ring, uint64_t *read_seq, const uint8_t **data_ptr
 int rss_ring_peek_done(rss_ring_t *ring, const rss_ring_slot_t *meta);
 
 int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms);
+
+/* True when the shm file behind this handle is no longer the file the
+ * name resolves to (producer restarted) or is gone (producer dead and
+ * cleaned up). Stale handles never produce again: close and reopen. */
+bool rss_ring_stale(rss_ring_t *ring);
 const rss_ring_header_t *rss_ring_get_header(rss_ring_t *ring);
 uint32_t rss_ring_max_frame_size(rss_ring_t *ring);
 

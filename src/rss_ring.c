@@ -738,6 +738,34 @@ int rss_ring_peek_done(rss_ring_t *ring, const rss_ring_slot_t *meta)
     return 0;
 }
 
+/* A producer restart creates a NEW shm file at the same name; the old
+ * mapping stays valid but frozen, so a consumer polling it sees
+ * nothing change -- and never learns the producer was reborn. Compare
+ * the mapped file's identity against the name's current file: a
+ * mismatch or a missing file means this handle is stale and the
+ * consumer must close and reopen. */
+bool rss_ring_stale(rss_ring_t *ring)
+{
+    if (!ring || ring->shm_fd < 0)
+        return false;
+
+    struct stat mapped;
+    if (fstat(ring->shm_fd, &mapped) != 0)
+        return true;
+
+    char shm_name[128];
+    make_shm_name(shm_name, sizeof(shm_name), ring->name);
+    int fd = shm_open(shm_name, O_RDONLY, 0);
+    if (fd < 0)
+        return true;
+
+    struct stat current;
+    bool same = fstat(fd, &current) == 0 && current.st_ino == mapped.st_ino &&
+                current.st_dev == mapped.st_dev;
+    close(fd);
+    return !same;
+}
+
 int rss_ring_wait(rss_ring_t *ring, uint32_t timeout_ms)
 {
     if (!ring)
