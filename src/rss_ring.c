@@ -350,7 +350,14 @@ int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length
     if (buf_idx >= hdr->ref_buf_count)
         return -EINVAL;
 
-    uint32_t slot_count = hdr->slot_count;
+    /* Same supersede check as the embedded path: refmode keeps frame
+     * data in rmem, but the slot array still lives in this handle's
+     * mapping, and a re-create with more slots would push the index
+     * past its end. This is the path devices use. */
+    if (atomic_load_explicit(&hdr->incarnation, memory_order_acquire) != ring->open_incarnation)
+        return -EPIPE;
+
+    uint32_t slot_count = ring->own_slot_count ? ring->own_slot_count : hdr->slot_count;
     uint64_t seq = atomic_load_explicit(&hdr->write_seq, memory_order_relaxed) + 1;
     uint32_t slot_idx = (uint32_t)(seq % slot_count);
     rss_ring_slot_t *slot = &ring->slots[slot_idx];
