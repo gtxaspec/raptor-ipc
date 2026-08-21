@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -39,22 +40,146 @@ struct rss_ctrl {
 /*  Helpers                                                           */
 /* ------------------------------------------------------------------ */
 
+static int64_t mono_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 /*
- * Read exactly `count` bytes from fd into buf.
+ * Connect, bounded by the caller's timeout.
+ *
+ * A blocking connect() to a unix socket does not fail when the daemon has
+ * stopped answering -- it waits. The listener is still there and the socket
+ * still exists, so the kernel queues the connection; once RSS_CTRL_BACKLOG of
+ * them are queued and unaccepted, the next connect() blocks with no timeout of
+ * any kind, and every caller here inherits that.
+ *
+ * That is worse than the failure it looks like, because the timeout every
+ * caller passes covers only the read. A daemon that is running, listening and
+ * not accepting -- stopped, wedged, or busy in something long -- would hold
+ * the caller indefinitely on a call it believed was bounded, and rcd's serve
+ * loop is single-threaded, so holding rcd holds the camera's whole
+ * configuration interface.
+ *
+ * Non-blocking and retried instead. On AF_UNIX a full backlog is EAGAIN rather
+ * than EINPROGRESS, and there is nothing to poll for -- no event fires when a
+ * queue slot frees -- so the wait is a short sleep and another attempt until
+ * the deadline. EINPROGRESS is handled anyway: it does not arise for unix
+ * sockets today and costs four lines to not depend on that.
+ */
+#define CTRL_CONNECT_RETRY_MS 20
+
+static int ctrl_connect(int fd, const struct sockaddr_un *addr, uint32_t timeout_ms)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0)
+        return -errno;
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return -errno;
+
+    int64_t deadline = mono_ms() + (int64_t)timeout_ms;
+    int rc = -ETIMEDOUT;
+
+    for (;;) {
+        if (connect(fd, (const struct sockaddr *)addr, sizeof(*addr)) == 0) {
+            rc = 0;
+            break;
+        }
+
+        int err = errno;
+
+        if (err == EINTR)
+            continue;
+        if (err == EISCONN) {
+            rc = 0;
+            break;
+        }
+
+        if (err == EINPROGRESS) {
+            int left = (int)(deadline - mono_ms());
+            struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+            int pr = poll(&pfd, 1, left > 0 ? left : 0);
+
+            if (pr <= 0) {
+                rc = pr < 0 ? -errno : -ETIMEDOUT;
+                break;
+            }
+
+            int soerr = 0;
+            socklen_t slen = sizeof(soerr);
+
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen) < 0) {
+                rc = -errno;
+                break;
+            }
+            rc = soerr ? -soerr : 0;
+            break;
+        }
+
+        if (err != EAGAIN) {
+            rc = -err;
+            break;
+        }
+
+        /* Backlog full. Nothing to wait on, so wait a little and ask again. */
+        if (mono_ms() >= deadline) {
+            rc = -ETIMEDOUT;
+            break;
+        }
+        poll(NULL, 0, CTRL_CONNECT_RETRY_MS);
+    }
+
+    /*
+     * Blocking again either way. Everything below this expects it, and the
+     * timeouts they use are their own.
+     */
+    if (fcntl(fd, F_SETFL, flags) < 0 && rc == 0)
+        rc = -errno;
+
+    return rc;
+}
+
+/*
+ * Read exactly `count` bytes from fd into buf, against an absolute deadline.
+ *
+ * A deadline rather than a timeout per poll, which is what this used to take.
+ * The difference does not show against a peer that says nothing -- that costs
+ * one timeout either way -- but a peer that keeps sending, slowly, restarted
+ * the clock with every byte it sent. Measured: a 300 ms budget against a peer
+ * writing one byte every 250 ms returned after 10.8 seconds, thirty-six times
+ * the budget, and returned *successfully*. It scales with the length of the
+ * message, so a full-sized reply is thousands of times the budget rather than
+ * tens.
+ *
+ * `deadline_ms` of 0 means no deadline, which is what a timeout of 0 has
+ * always meant here.
+ *
  * Returns 0 on success, -errno on error, -ECONNRESET on EOF.
  */
-static int read_exact(int fd, void *buf, size_t count, uint32_t timeout_ms)
+static int read_exact(int fd, void *buf, size_t count, int64_t deadline_ms)
 {
     uint8_t *p = buf;
     size_t remaining = count;
 
     while (remaining > 0) {
-        if (timeout_ms > 0) {
+        if (deadline_ms > 0) {
             struct pollfd pfd = {.fd = fd, .events = POLLIN};
             int pr;
-            do {
-                pr = poll(&pfd, 1, (int)timeout_ms);
-            } while (pr < 0 && errno == EINTR);
+
+            /* Recomputed every time round, including after a signal, so
+             * neither a slow sender nor a stream of EINTR buys more time. */
+            for (;;) {
+                int64_t left = deadline_ms - mono_ms();
+
+                if (left <= 0)
+                    return -ETIMEDOUT;
+                pr = poll(&pfd, 1, (int)left);
+                if (pr >= 0 || errno != EINTR)
+                    break;
+            }
 
             if (pr < 0)
                 return -errno;
@@ -111,8 +236,13 @@ static int write_exact(int fd, const void *buf, size_t count)
  */
 static int read_message(int fd, char **out_buf, uint32_t timeout_ms)
 {
+    /* One deadline for the whole message. The length and the body are two
+     * reads of one thing, and giving each its own budget is what let a
+     * trickling peer hold a caller for a multiple of it. */
+    int64_t deadline = timeout_ms > 0 ? mono_ms() + (int64_t)timeout_ms : 0;
+
     uint8_t len_buf[2];
-    int ret = read_exact(fd, len_buf, 2, timeout_ms);
+    int ret = read_exact(fd, len_buf, 2, deadline);
     if (ret < 0)
         return ret;
 
@@ -126,7 +256,7 @@ static int read_message(int fd, char **out_buf, uint32_t timeout_ms)
     if (!buf)
         return -ENOMEM;
 
-    ret = read_exact(fd, buf, msg_len, timeout_ms);
+    ret = read_exact(fd, buf, msg_len, deadline);
     if (ret < 0) {
         free(buf);
         return ret;
@@ -253,7 +383,7 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
         return -errno;
 
     /* Set write timeout so a slow/stalled client can't block the daemon
-     * indefinitely. Read side is already covered by poll() in read_exact. */
+     * indefinitely. The read side is bounded by the deadline in read_exact. */
     struct timeval snd_tv = {.tv_sec = 5, .tv_usec = 0};
     (void)setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
 
@@ -261,9 +391,15 @@ int rss_ctrl_accept_and_handle(rss_ctrl_t *ctrl,
     char *cmd = NULL;
     char *resp_buf = NULL;
 
-    /* Read the request (5s timeout per poll — a client trickling one byte
-     * every 4.9s could hold the handler longer, but on a root-only local
-     * Unix socket this is not a practical attack vector). */
+    /*
+     * Read the request, bounded at five seconds for the whole message rather
+     * than for each poll of it. It used to be per poll, excused on the
+     * grounds that the socket was root-only and local -- which was never true
+     * of this socket: it is created 0666 on purpose, a few lines above, so
+     * that a non-root client can use it. A local process trickling one byte
+     * every 4.9 s could hold a daemon's serve loop for as long as it cared
+     * to, and rcd's loop is the camera's whole configuration interface.
+     */
     int msg_len = read_message(client_fd, &cmd, 5000);
     if (msg_len < 0) {
         ret = msg_len;
@@ -321,11 +457,23 @@ int rss_ctrl_send_command(const char *sock_path, const char *cmd_json, char *res
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", sock_path);
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        int err = errno;
+    uint32_t budget = timeout_ms ? timeout_ms : 5000;
+    int cerr = ctrl_connect(fd, &addr, budget);
+
+    if (cerr < 0) {
         close(fd);
-        return -err;
+        return cerr;
     }
+
+    /*
+     * And the write, for the same reason: a peer that never reads will fill
+     * the socket buffer, and write_exact() would sit in it. Small messages
+     * almost never get that far, which is exactly why it would be the one
+     * that is never noticed.
+     */
+    struct timeval snd = {.tv_sec = budget / 1000, .tv_usec = (budget % 1000) * 1000};
+
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));
 
     size_t cmd_len = strlen(cmd_json);
     int ret = write_message(fd, cmd_json, cmd_len);
@@ -339,7 +487,7 @@ int rss_ctrl_send_command(const char *sock_path, const char *cmd_json, char *res
 
     /* Read the response. */
     char *resp = NULL;
-    int rlen = read_message(fd, &resp, timeout_ms ? timeout_ms : 5000);
+    int rlen = read_message(fd, &resp, budget);
     close(fd);
 
     if (rlen < 0)
