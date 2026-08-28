@@ -580,6 +580,115 @@ TEST ring_utc_mapping(void)
     PASS();
 }
 
+/* v5: source-sequence loss accounting */
+TEST ring_src_seq_loss(void)
+{
+    /* 16 slots: this test publishes 9 frames and still reads slot 1
+     * at the end (read would EOVERFLOW with an 8-slot ring). */
+    rss_ring_t *p = rss_ring_create("t_srcseq", 16, 65536);
+    ASSERT(p);
+    rss_ring_t *c = rss_ring_open("t_srcseq");
+    ASSERT(c);
+
+    uint8_t d[8] = {0};
+    rss_ring_loss_t loss;
+
+    /* Baseline starts at NONE: first stamped frame sets it, no loss */
+    rss_ring_publish_seq(p, d, sizeof(d), 0, 0, 1, 100);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(0, loss.drop_source);
+    ASSERT_EQ(0, loss.drop_publish);
+    ASSERT_EQ(0, loss.src_seq_resets);
+    ASSERT_EQ(100, loss.src_seq_last);
+
+    /* Normal advance: seq + 1, still no loss */
+    rss_ring_publish_seq(p, d, sizeof(d), 0, 0, 1, 101);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(0, loss.drop_source);
+    ASSERT_EQ(0, loss.drop_publish);
+
+    /* Jump of 3: two source frames never fetched */
+    rss_ring_publish_seq(p, d, sizeof(d), 0, 0, 1, 104);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(2, loss.drop_source);
+    ASSERT_EQ(0, loss.drop_publish);
+
+    /* Fetched but dropped before publish */
+    rss_ring_report_drop(p, 105);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(2, loss.drop_source);
+    ASSERT_EQ(1, loss.drop_publish);
+    ASSERT_EQ(105, loss.src_seq_last);
+
+    /* Publish resumes at the next frame: no double count */
+    rss_ring_publish_seq(p, d, sizeof(d), 0, 0, 1, 106);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(2, loss.drop_source);
+    ASSERT_EQ(1, loss.drop_publish);
+
+    /* Backward jump: reset, not loss */
+    rss_ring_publish_seq(p, d, sizeof(d), 0, 0, 1, 5);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(2, loss.drop_source);
+    ASSERT_EQ(1, loss.drop_publish);
+    ASSERT_EQ(1, loss.src_seq_resets);
+    ASSERT_EQ(5, loss.src_seq_last);
+
+    /* 32-bit wrap reads as +1 advance, not a giant loss */
+    rss_ring_publish_seq(p, d, sizeof(d), 0, 0, 1, 0xFFFFFFFFu);
+    rss_ring_publish_seq(p, d, sizeof(d), 0, 0, 1, 0);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(2, loss.drop_source);
+    ASSERT_EQ(1, loss.drop_publish);
+    ASSERT_EQ(0, loss.src_seq_last);
+
+    /* Legacy publish after stamped frames: NONE is stamped, accounting
+     * paused (baseline preserved) */
+    rss_ring_publish(p, d, sizeof(d), 0, 0, 1);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(0, loss.src_seq_last);
+    /* stamped frame resuming from the preserved baseline */
+    rss_ring_publish_seq(p, d, sizeof(d), 0, 0, 1, 1);
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(2, loss.drop_source);
+    ASSERT_EQ(1, loss.drop_publish);
+    ASSERT_EQ(1, loss.src_seq_last);
+
+    /* Consumer can read the src_seq back from the slot */
+    uint64_t read_seq = 1;
+    uint32_t len;
+    rss_ring_slot_t meta;
+    ASSERT_EQ(0, rss_ring_read(c, &read_seq, d, sizeof(d), &len, &meta));
+    ASSERT_EQ(100, meta.src_seq);
+
+    rss_ring_close(c);
+    rss_ring_destroy(p);
+    PASS();
+}
+
+/* v5: refmode publish stamps src_seq too */
+TEST ring_ref_seq_loss(void)
+{
+    /* 2 ref bufs of 4096 bytes */
+    rss_ring_t *p = rss_ring_create("t_refseq", 8, 0);
+    ASSERT(p);
+    ASSERT_EQ(0, rss_ring_enable_refmode(p, 8192, 0, 2, 4096));
+    rss_ring_t *c = rss_ring_open("t_refseq");
+    ASSERT(c);
+
+    rss_ring_loss_t loss;
+    ASSERT_EQ(0, rss_ring_publish_ref_seq(p, 0, 100, 10, 0, 1, 0, 10));
+    ASSERT_EQ(0, rss_ring_publish_ref_seq(p, 4096, 100, 20, 0, 1, 1, 12));
+    rss_ring_get_loss(c, &loss);
+    ASSERT_EQ(1, loss.drop_source);
+    ASSERT_EQ(0, loss.drop_publish);
+    ASSERT_EQ(12, loss.src_seq_last);
+
+    rss_ring_close(c);
+    rss_ring_destroy(p);
+    PASS();
+}
+
 SUITE(ring_suite)
 {
     RUN_TEST(ring_create_open);
@@ -603,4 +712,6 @@ SUITE(ring_suite)
     RUN_TEST(ring_magic_mismatch_open);
     RUN_TEST(ring_version_check_helpers);
     RUN_TEST(ring_utc_mapping);
+    RUN_TEST(ring_src_seq_loss);
+    RUN_TEST(ring_ref_seq_loss);
 }
