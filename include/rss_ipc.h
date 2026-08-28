@@ -148,14 +148,15 @@ typedef struct __attribute__((aligned(64))) {
      * count of source frames missing across consecutive stamped frames,
      * partitioned into "missed between GetStream calls" (drop_source) and
      * "fetched but never published" (drop_publish, added by
-     * rss_ring_report_drop). src_seq_resets counts backward jumps larger
-     * than RSS_SRC_SEQ_MAX_GAP (encoder restart, seq domain change): the
+     * rss_ring_report_drop). src_seq_resets counts sequence-domain
+     * changes -- any backward jump, or a forward jump past
+     * RSS_SRC_SEQ_MAX_GAP (encoder restart, counter domain change): the
      * frame is published and accounting resumes from the new base, no
      * bogus huge loss is recorded. */
-    _Atomic uint32_t drop_source;     /* source frames never fetched        */
-    _Atomic uint32_t drop_publish;    /* fetched frames never published     */
-    _Atomic uint32_t src_seq_resets;  /* backward jumps (restart/rewrap)    */
-    _Atomic uint32_t src_seq_last;    /* last published src_seq, else NONE  */
+    _Atomic uint32_t drop_source;    /* source frames never fetched        */
+    _Atomic uint32_t drop_publish;   /* fetched frames never published     */
+    _Atomic uint32_t src_seq_resets; /* backward jumps (restart/rewrap)    */
+    _Atomic uint32_t src_seq_last;   /* last published src_seq, else NONE  */
 } rss_ring_header_t;
 
 /* MISB ST 0603 §7.4 Time Status byte values for utc_status */
@@ -192,18 +193,14 @@ typedef struct {
 /* Producer API */
 rss_ring_t *rss_ring_create(const char *name, uint32_t slot_count, uint32_t data_size);
 void rss_ring_destroy(rss_ring_t *ring);
+/* Publish stamps the SOURCE's frame counter into the slot (see src_seq
+ * and the loss counters in the header). Producers without a real
+ * counter (audio, JPEG pulse channels, file/test producers) pass
+ * RSS_SRC_SEQ_NONE, which skips loss accounting for that frame. */
 int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int64_t timestamp,
-                     uint16_t nal_type, uint8_t is_key);
+                     uint16_t nal_type, uint8_t is_key, uint32_t src_seq);
 int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_count,
-                         int64_t timestamp, uint16_t nal_type, uint8_t is_key);
-/* v5 variants that stamp the source frame counter (see src_seq in the slot
- * and the loss counters in the header). src_seq == RSS_SRC_SEQ_NONE skips
- * accounting, identical to the legacy calls above. */
-int rss_ring_publish_seq(rss_ring_t *ring, const uint8_t *data, uint32_t length, int64_t timestamp,
-                         uint16_t nal_type, uint8_t is_key, uint32_t src_seq);
-int rss_ring_publish_iov_seq(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_count,
-                             int64_t timestamp, uint16_t nal_type, uint8_t is_key,
-                             uint32_t src_seq);
+                         int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint32_t src_seq);
 void rss_ring_set_stream_info(rss_ring_t *ring, uint32_t stream_id, uint32_t codec, uint32_t width,
                               uint32_t height, uint32_t fps_num, uint32_t fps_den, uint8_t profile,
                               uint8_t level);
@@ -242,12 +239,7 @@ void rss_ring_set_utc(rss_ring_t *ring, int64_t offset_us, uint8_t status);
  * bounded retry (skip and retry next frame). */
 int rss_ring_get_utc(rss_ring_t *ring, int64_t *offset_us, uint8_t *status);
 int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length, int64_t timestamp,
-                         uint16_t nal_type, uint8_t is_key, uint8_t buf_idx);
-/* v5 refmode variant with source frame counter, same semantics as the
- * embedded-mode _seq variants. */
-int rss_ring_publish_ref_seq(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length,
-                             int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint8_t buf_idx,
-                             uint32_t src_seq);
+                         uint16_t nal_type, uint8_t is_key, uint8_t buf_idx, uint32_t src_seq);
 
 /* v5: tell the ring the producer fetched a source frame but is NOT
  * publishing it (transient depth-swap snapshot, torn frame, abort path).

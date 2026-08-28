@@ -350,8 +350,8 @@ static uint32_t ring_seq_update_loss(rss_ring_header_t *hdr, uint32_t src_seq)
     return src_seq;
 }
 
-int rss_ring_publish_iov_seq(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_count,
-                             int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint32_t src_seq)
+int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_count,
+                         int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint32_t src_seq)
 {
     if (!ring || !ring->is_producer || !iov || iov_count == 0)
         return -EINVAL;
@@ -458,25 +458,11 @@ int rss_ring_publish_iov_seq(rss_ring_t *ring, const rss_iov_t *iov, uint32_t io
     return 0;
 }
 
-int rss_ring_publish_iov(rss_ring_t *ring, const rss_iov_t *iov, uint32_t iov_count,
-                         int64_t timestamp, uint16_t nal_type, uint8_t is_key)
-{
-    return rss_ring_publish_iov_seq(ring, iov, iov_count, timestamp, nal_type, is_key,
-                                    RSS_SRC_SEQ_NONE);
-}
-
-int rss_ring_publish_seq(rss_ring_t *ring, const uint8_t *data, uint32_t length, int64_t timestamp,
-                         uint16_t nal_type, uint8_t is_key, uint32_t src_seq)
+int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int64_t timestamp,
+                     uint16_t nal_type, uint8_t is_key, uint32_t src_seq)
 {
     rss_iov_t iov = {.data = data, .length = length};
-    return rss_ring_publish_iov_seq(ring, &iov, 1, timestamp, nal_type, is_key, src_seq);
-}
-
-int rss_ring_publish(rss_ring_t *ring, const uint8_t *data, uint32_t length, int64_t timestamp,
-                     uint16_t nal_type, uint8_t is_key)
-{
-    return rss_ring_publish_seq(ring, data, length, timestamp, nal_type, is_key,
-                                RSS_SRC_SEQ_NONE);
+    return rss_ring_publish_iov(ring, &iov, 1, timestamp, nal_type, is_key, src_seq);
 }
 
 int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint32_t rmem_offset,
@@ -514,9 +500,8 @@ int rss_ring_enable_refmode(rss_ring_t *ring, uint32_t rmem_size, uint32_t rmem_
     return 0;
 }
 
-int rss_ring_publish_ref_seq(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length,
-                             int64_t timestamp, uint16_t nal_type, uint8_t is_key, uint8_t buf_idx,
-                             uint32_t src_seq)
+int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length, int64_t timestamp,
+                         uint16_t nal_type, uint8_t is_key, uint8_t buf_idx, uint32_t src_seq)
 {
     if (!ring || !ring->is_producer || length == 0)
         return -EINVAL;
@@ -564,13 +549,6 @@ int rss_ring_publish_ref_seq(rss_ring_t *ring, uint32_t rmem_offset, uint32_t le
     return 0;
 }
 
-int rss_ring_publish_ref(rss_ring_t *ring, uint32_t rmem_offset, uint32_t length, int64_t timestamp,
-                         uint16_t nal_type, uint8_t is_key, uint8_t buf_idx)
-{
-    return rss_ring_publish_ref_seq(ring, rmem_offset, length, timestamp, nal_type, is_key, buf_idx,
-                                    RSS_SRC_SEQ_NONE);
-}
-
 void rss_ring_report_drop(rss_ring_t *ring, uint32_t src_seq)
 {
     if (!ring || !ring->is_producer)
@@ -583,18 +561,26 @@ void rss_ring_report_drop(rss_ring_t *ring, uint32_t src_seq)
     uint32_t last = atomic_load_explicit(&hdr->src_seq_last, memory_order_relaxed);
     if (last != RSS_SRC_SEQ_NONE) {
         int32_t diff = (int32_t)(src_seq - last);
-        if (diff > 0) {
-            /* frames between last and this one, exclusive: this call
-             * covers 0..diff; the frame itself is counted as dropped,
-             * everything strictly between was never fetched (source loss)
-             * — unless report_drop is called for each one. */
+        if (diff > 0 && (uint32_t)diff <= RSS_SRC_SEQ_MAX_GAP) {
+            /* frames strictly between last and this one were never
+             * fetched (source loss); the frame itself was fetched and
+             * dropped. Report each fetched frame exactly once: a second
+             * call for the same seq double-counts drop_publish. */
             if (diff > 1)
                 atomic_fetch_add_explicit(&hdr->drop_source, (uint32_t)(diff - 1),
                                           memory_order_relaxed);
             atomic_fetch_add_explicit(&hdr->drop_publish, 1, memory_order_relaxed);
+        } else if (diff != 0) {
+            /* A jump the publish path would treat as a domain change
+             * (backward, or forward past RSS_SRC_SEQ_MAX_GAP) is one
+             * here too: the dropped frame counts, the gap is a
+             * boundary, not a loss. Without this guard one dropped
+             * frame after an encoder restart booked the whole jump as
+             * drop_source. */
+            atomic_fetch_add_explicit(&hdr->src_seq_resets, 1, memory_order_relaxed);
+            atomic_fetch_add_explicit(&hdr->drop_publish, 1, memory_order_relaxed);
         } else {
-            /* not ahead of the last published frame: a duplicate or a
-             * re-fetch of an already-counted frame — count only the drop */
+            /* duplicate report of the tracked seq: count only the drop */
             atomic_fetch_add_explicit(&hdr->drop_publish, 1, memory_order_relaxed);
         }
     } else {
